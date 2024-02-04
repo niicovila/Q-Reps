@@ -1,0 +1,60 @@
+alg: QREPSDiscrete
+alg_kwargs:
+  eta: .5
+  tau: 0.005
+  policy_noise: 0.1
+  target_noise: 0.2
+  noise_clip: 0.5
+  critic_freq: 1
+  actor_freq: 2
+  target_freq: 2
+  use_target_actor: true
+  beta: 4.0
+  alpha: null
+  init_steps: 200
+  exp_clip: 8.0
+
+optim: Adam
+optim_kwargs:
+  lr: 0.0001
+
+network: ActorCriticPolicy
+network_kwargs:
+  actor_class: DiagonalGaussianMLPActorDiscrete
+  actor_kwargs:
+    hidden_layers: [1024, 1024]
+    log_std_bounds: [-5, 2]
+  critic_class: DiscreteMLPCritic
+  critic_kwargs:
+    hidden_layers: [256, 256]
+  encoder_class: DrQv2Encoder
+  # encoder_kwargs:
+  # ortho_init: true
+
+
+batch_size: null # Use serial replay buffer
+collate_fn: null # The collate function passed to the dataloader. None uses pytorch default.
+checkpoint: null # A checkpoint to initialize the network from.
+seed: null
+
+env: ALE/Alien-v5
+
+dataset: ReplayBuffer
+dataset_kwargs:
+  discount: 0.99
+  nstep: 1
+  capacity: 1000000
+  fetch_every: 100
+  batch_size: 256
+
+processor: null
+
+train_kwargs: # Arguments given to Algorithm.train
+  total_steps: 200000 # The total number of steps to train
+  log_freq: 50 # How often to log values
+  eval_freq: 100 # How often to run evals
+  eval_ep: 10 # Number of enviornment episodes to run for evaluation, or -1 if none should be run.
+  loss_metric: reward # The validation metric that determines when to save the "best_checkpoint"
+  workers: 0 # Number of dataloader workers.
+  profile_freq: 250
+
