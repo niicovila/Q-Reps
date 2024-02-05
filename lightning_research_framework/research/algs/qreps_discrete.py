@@ -133,7 +133,6 @@ class QREPSDiscrete(Algorithm):
             entropies = torch.sum(action_probs * log_prob, dim=1)
             
             actor_loss = (self.alpha.detach() * (entropies - qs_pi)).mean()
-            print(actor_loss)
 
             self.optim['actor'].zero_grad()
             actor_loss.backward(retain_graph=True)
