@@ -20,7 +20,7 @@ optim_kwargs:
 
 network: ActorCriticPolicy
 network_kwargs:
-  actor_class: DiscreteMLPActor
+  actor_class: DiscreteMLPActorV2
   actor_kwargs:
     hidden_layers: [1024, 1024]
   critic_class: DiscreteMLPCritic

@@ -3,6 +3,7 @@ from torch import nn
 from torch import distributions
 from torch.nn import functional as F
 from functools import partial
+from torch.distributions import Categorical
 
 from .common import MLP, LinearEnsemble, EnsembleMLP
 
@@ -122,6 +123,37 @@ class DiscreteMLPActor(nn.Module):
         actions = self(obs)
         action = actions.argmax(dim=-1)
         return action
+    
+class DiscreteMLPActorV2(nn.Module):
+
+    def __init__(self, observation_space, action_space, hidden_layers=[256, 256], act=nn.ReLU, output_act=None, ortho_init=False, output_gain=None):
+        super().__init__()
+        self.mlp = MLP(observation_space.shape[0], action_space.n, hidden_layers=hidden_layers, act=act, output_act=None)
+        if ortho_init:
+            self.apply(partial(weight_init, gain=float(ortho_init))) # use the fact that True converts to 1.0
+            if output_gain is not None:
+                self.mlp.last_layer.apply(partial(weight_init, gain=output_gain))
+    
+    def forward(self, obs):
+        action_probs = F.softmax(self.mlp(obs), dim=1)
+        action_dist = Categorical(action_probs)
+        actions = action_dist.sample().view(-1)
+        z = (action_probs == 0.0).float() * 1e-8
+        log_action_probs = torch.log(action_probs + z)
+
+        return actions, action_probs, log_action_probs
+    
+    def predict(self, obs, sample=False):
+        h = self.mlp(obs)
+        out = F.softmax(h, dim=1)
+        actions = torch.argmax(
+            out, dim=1)
+        if sample:
+            action_dist = Categorical(out)
+            actions = action_dist.sample().view(-1)
+        return actions
+
+
 
 class SquashedNormal(distributions.TransformedDistribution):
 

@@ -127,13 +127,12 @@ class QREPSDiscrete(Algorithm):
 
             
     def _update_actor(self, batch):
-            ## Todo: Check why "Trying to backward through the graph a second time"
             obs = batch['obs'].detach()
-            dist = self.network.actor(obs)
-            log_prob = torch.log(dist).sum(dim=1)    
+            _, action_probs, log_prob = self.network.actor(obs)
             qs_pi = self.network.critic(obs).mean(dim=1)
-
-            actor_loss = (self.alpha.detach() * (log_prob - qs_pi)).mean()
+            entropies = torch.sum(action_probs * log_prob, dim=1)
+            
+            actor_loss = (self.alpha.detach() * (entropies - qs_pi)).mean()
             print(actor_loss)
 
             self.optim['actor'].zero_grad()
@@ -161,11 +160,10 @@ class QREPSDiscrete(Algorithm):
         else:
             self.eval_mode()
             with torch.no_grad():
-                action = self.predict(self._current_obs)
+                action = self.predict(self._current_obs, sample=True)
             action += int(self.policy_noise * np.random.randn(1))
             self.train_mode()
         action = np.clip(action, self.action_range[0], self.action_range[-1])
-       
         next_obs, reward, done, truncated, info = self.env.step(action)
 
         self._episode_length += 1
