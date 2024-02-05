@@ -164,7 +164,7 @@ class QREPSDiscrete(Algorithm):
             action += int(self.policy_noise * np.random.randn(1))
             self.train_mode()
         action = np.clip(action, self.action_range[0], self.action_range[-1])
-        next_obs, reward, done, truncated, info = self.env.step(action)
+        next_obs, reward, done, info = self.env.step(action)
 
         self._episode_length += 1
         self._episode_reward += reward
@@ -186,7 +186,7 @@ class QREPSDiscrete(Algorithm):
             metrics['length'] = self._episode_length
             metrics['num_ep'] = self._num_ep
             # Reset the environment
-            self._current_obs, info = self.env.reset()
+            self._current_obs = self.env.reset()
 
             self.dataset.add(self._current_obs) # Add the first timestep
             self._episode_length = 0
@@ -200,7 +200,7 @@ class QREPSDiscrete(Algorithm):
 
     def _setup_train(self):
         # Now setup the logging parameters
-        self._current_obs, info = self.env.reset()
+        self._current_obs = self.env.reset()
         self._episode_reward = 0
         self._episode_length = 0
         self._num_ep = 0
