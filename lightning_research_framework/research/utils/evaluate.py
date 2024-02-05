@@ -18,11 +18,11 @@ def eval_policy(env, model, num_ep):
         ep_length = 0
         ep_metric = collections.defaultdict(list)
         
-        obs, inf = env.reset()
+        obs = env.reset()
         while not done:
             with torch.no_grad():
                 action = model.predict(obs)
-            obs, reward, done, truncated, info = env.step(action)
+            obs, reward, done, info = env.step(action)
             ep_reward += reward
             ep_length += 1
             for k, v in info.items():

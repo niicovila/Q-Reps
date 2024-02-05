@@ -127,15 +127,17 @@ class QREPSDiscrete(Algorithm):
 
             
     def _update_actor(self, batch):
-            dist = self.network.actor(batch['obs'])  
-            action = dist.rsample()
-            log_prob = dist.log_prob(action).sum(dim=-1)
-            qs_pi = self.network.critic(batch['obs'], action)
-            q_pred = torch.min(qs_pi, dim=0)[0]
-            actor_loss = (self.alpha.detach() * log_prob - q_pred).mean()
+            ## Todo: Check why "Trying to backward through the graph a second time"
+            obs = batch['obs'].detach()
+            dist = self.network.actor(obs)
+            log_prob = torch.log(dist).sum(dim=1)    
+            qs_pi = self.network.critic(obs).mean(dim=1)
 
-            self.optim['actor'].zero_grad(set_to_none=True)
-            actor_loss.backward()
+            actor_loss = (self.alpha.detach() * (log_prob - qs_pi)).mean()
+            print(actor_loss)
+
+            self.optim['actor'].zero_grad()
+            actor_loss.backward(retain_graph=True)
             self.optim['actor'].step()
 
             # Alpha Loss
@@ -145,26 +147,12 @@ class QREPSDiscrete(Algorithm):
                 alpha_loss = (self.alpha * (-log_prob - self.target_entropy).detach()).mean()
                 alpha_loss.backward()
                 self.optim['log_alpha'].step()
+                entropy = (-log_prob.mean())
+
+            return dict(actor_loss=actor_loss.item(), entropy=entropy.item(), 
+                    alpha_loss=alpha_loss.item(), alpha=self.alpha.detach().item())
+
      
-
-    def _update_actor(self, batch):
-        obs = batch['obs'].detach()
-        dist = self.network.actor(batch['obs'])  
-        action = dist.rsample()
-        log_prob = dist.log_prob(action).sum(dim=-1)
-        print(log_prob)
-
-        action = self.network.actor(obs)
-        q = self.network.critic(obs)
-        actor_loss = (self.alpha.detach() * log_prob - q.mean()).mean()
-        print(actor_loss)
-        
-        self.optim['actor'].zero_grad(set_to_none=True)
-        actor_loss.backward()
-        self.optim['actor'].step()
-
-        return dict(actor_loss=actor_loss.item())
-
     def _step_env(self):
         # Step the environment and store the transition data.
         metrics = dict()

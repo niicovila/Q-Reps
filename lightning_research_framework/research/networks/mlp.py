@@ -107,7 +107,7 @@ class ContinuousMLPActor(nn.Module):
     
 class DiscreteMLPActor(nn.Module):
 
-    def __init__(self, observation_space, action_space, hidden_layers=[256, 256], act=nn.ReLU, output_act=nn.Tanh, ortho_init=False, output_gain=None):
+    def __init__(self, observation_space, action_space, hidden_layers=[256, 256], act=nn.ReLU, output_act=nn.Softmax, ortho_init=False, output_gain=None):
         super().__init__()
         self.mlp = MLP(observation_space.shape[0], action_space.n, hidden_layers=hidden_layers, act=act, output_act=output_act)
         if ortho_init:

@@ -11,7 +11,7 @@ alg_kwargs:
   use_target_actor: true
   beta: 4.0
   alpha: null
-  init_steps: 200
+  init_steps: 1
   exp_clip: 8.0
 
 optim: Adam
@@ -20,10 +20,9 @@ optim_kwargs:
 
 network: ActorCriticPolicy
 network_kwargs:
-  actor_class: DiagonalGaussianMLPActorDiscrete
+  actor_class: DiscreteMLPActor
   actor_kwargs:
     hidden_layers: [1024, 1024]
-    log_std_bounds: [-5, 2]
   critic_class: DiscreteMLPCritic
   critic_kwargs:
     hidden_layers: [256, 256]
