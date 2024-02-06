@@ -10,13 +10,11 @@ import itertools
 from research.networks.base import ActorCriticPolicy
 from research.utils.utils import to_tensor, to_device
 
-
-
 def qreps_loss(delta, eta, clip, V, batch_size, discount, action_space):
     t1 = sum(torch.exp(eta * delta))
     t1 /= (batch_size * action_space)
     loss = (1/eta) * torch.log(t1)
-    # loss += (1 - discount) * V.sum() / batch_size
+    loss += (1 - discount) * V.sum() / batch_size
     return loss
 
 def mse_loss(pred, label):
@@ -163,7 +161,7 @@ class QREPSDiscrete(Algorithm):
             action += int(self.policy_noise * np.random.randn(1))
             self.train_mode()
         action = np.clip(action, self.action_range[0], self.action_range[-1])
-        next_obs, reward, done, info = self.env.step(action)
+        next_obs, reward, done, truncated, info = self.env.step(action)
 
         self._episode_length += 1
         self._episode_reward += reward
@@ -185,7 +183,8 @@ class QREPSDiscrete(Algorithm):
             metrics['length'] = self._episode_length
             metrics['num_ep'] = self._num_ep
             # Reset the environment
-            self._current_obs = self.env.reset()
+            # self._current_obs, info = self.env.reset()
+            self._current_obs = next_obs
 
             self.dataset.add(self._current_obs) # Add the first timestep
             self._episode_length = 0
@@ -199,7 +198,7 @@ class QREPSDiscrete(Algorithm):
 
     def _setup_train(self):
         # Now setup the logging parameters
-        self._current_obs = self.env.reset()
+        self._current_obs, info = self.env.reset()
         self._episode_reward = 0
         self._episode_length = 0
         self._num_ep = 0

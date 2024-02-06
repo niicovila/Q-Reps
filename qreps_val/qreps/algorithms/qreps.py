@@ -118,10 +118,8 @@ class QREPS(AbstractAlgorithm):
         observations = observations.to(self.device)
         actions = actions.to(self.device)
         rewards = rewards.to(self.device)   
-        next_observations = next_observations.to(self.device)   
-
+        next_observations = next_observations.to(self.device)
         rewards = self.get_rewards(rewards)
-        dist_before = self.policy.distribution(observations)
 
         self.optimize_loss(self.dual, optimizer=self.theta_opt)
         qreps_loss = self.dual(observations, next_observations, rewards, actions)
@@ -133,14 +131,11 @@ class QREPS(AbstractAlgorithm):
 
         self.buffer.reset()
 
-        dist_after = self.policy.distribution(observations)
         self.report_tensorboard(
             observations,
             next_observations,
             rewards,
             actions,
-            dist_before,
-            dist_after,
             iteration,
         )
         if self.writer is not None:

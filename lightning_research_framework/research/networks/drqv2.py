@@ -4,7 +4,7 @@ import gym
 import numpy as np
 import torch
 from torch import nn
-
+import torchvision.transforms as T
 from .common import MLP, EnsembleMLP
 
 
@@ -21,6 +21,8 @@ def drqv2_weight_init(m: nn.Module) -> None:
 
 
 class DrQv2Encoder(nn.Module):
+    
+
     def __init__(self, observation_space: gym.Space, action_space: gym.Space) -> None:
         super().__init__()
         if len(observation_space.shape) == 4:
@@ -31,8 +33,14 @@ class DrQv2Encoder(nn.Module):
             channels = c
         else:
             raise ValueError("Invalid observation space for DRQV2 Image encoder.")
+
+        self.transform = T.Compose([
+            T.Grayscale(),
+            T.Resize((84, 84))
+        ])
+
         self.convnet = nn.Sequential(
-            nn.Conv2d(3, 32, 3, stride=2),
+            nn.Conv2d(1, 32, 3, stride=2),
             nn.ReLU(),
             nn.Conv2d(32, 32, 3, stride=1),
             nn.ReLU(),
@@ -45,9 +53,11 @@ class DrQv2Encoder(nn.Module):
         self.reset_parameters()
 
         with torch.no_grad():
-            sample = torch.as_tensor(observation_space.sample()[None]) / 255.0 - 0.5
+            sample = torch.as_tensor(observation_space.sample()[None])/ 255.0 - 0.5
             sample = sample.reshape(sample.shape[0], sample.shape[3], sample.shape[1], sample.shape[2])
+            sample = self.transform(sample)
             self.repr_dim = self.convnet(sample).shape[1]
+
 
     def reset_parameters(self):
         self.apply(drqv2_weight_init)
@@ -57,13 +67,11 @@ class DrQv2Encoder(nn.Module):
         return gym.spaces.Box(shape=(self.repr_dim,), low=-np.inf, high=np.inf, dtype=np.float32)
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        if len(obs.shape) == 5:
-            b, s, c, h, w = obs.shape
-            obs = obs.view(b, s * c, h, w)
-        else:
-            b, h, w, c = obs.shape
-            obs = obs.reshape(b, c, h, w)
+        b, h, w, c = obs.shape
+        obs = obs.reshape(b, c, h, w)
         obs = obs / 255.0 - 0.5
+        obs = self.transform(obs)
+        print(obs)
         h = self.convnet(obs)
         return h
 

@@ -23,9 +23,13 @@ def weight_init(m, gain=1):
 class MLPEncoder(nn.Module):
     def __init__(self, observation_space, action_space, hidden_layers=[256, 256], act=nn.ReLU, ortho_init=False):
         assert len(hidden_layers) > 1, "Must have at least one hidden layer for a shared MLP Extractor"
-        self.mlp = MLP(observation_space.shape[0], hidden_layers[-1], hidden_layers=hidden_layers[:-1], act=act)
+        super().__init__()
+        self.mlp = MLP(observation_space.shape[0], output_dim=128, act=act)
         if ortho_init:
             self.apply(partial(weight_init, gain=float(ortho_init))) # use the fact that True converts to 1.0
+
+    def forward(self, obs):
+        return self.mlp(obs)
         
 class ContinuousMLPCritic(nn.Module):
 
@@ -51,9 +55,9 @@ class ContinuousMLPCritic(nn.Module):
 
 class DiscreteMLPCritic(nn.Module):
 
-    def __init__(self, observation_space, action_space, hidden_layers=[256, 256], act=nn.Sigmoid, ortho_init=False, output_gain=None):
+    def __init__(self, observation_space, action_space, hidden_layers=[256, 256], act=nn.ReLU, ortho_init=False, output_gain=None):
         super().__init__()
-        self.q = MLP(observation_space.shape[0], action_space.n, hidden_layers=hidden_layers, act=act)
+        self.q = MLP(observation_space.shape[0], action_space.n, hidden_layers=hidden_layers, act=act, output_act=nn.Tanh)
         if ortho_init:
             self.apply(partial(weight_init, gain=float(ortho_init))) # use the fact that True converts to 1.0
             if output_gain is not None:
@@ -126,9 +130,9 @@ class DiscreteMLPActor(nn.Module):
     
 class DiscreteMLPActorV2(nn.Module):
 
-    def __init__(self, observation_space, action_space, hidden_layers=[256, 256], act=nn.ReLU, output_act=None, ortho_init=False, output_gain=None):
+    def __init__(self, observation_space, action_space, hidden_layers=[256, 256], act=nn.ReLU, output_act=nn.Tanh, ortho_init=False, output_gain=None):
         super().__init__()
-        self.mlp = MLP(observation_space.shape[0], action_space.n, hidden_layers=hidden_layers, act=act, output_act=None)
+        self.mlp = MLP(observation_space.shape[0], action_space.n, hidden_layers=hidden_layers, act=act, output_act=output_act)
         if ortho_init:
             self.apply(partial(weight_init, gain=float(ortho_init))) # use the fact that True converts to 1.0
             if output_gain is not None:

@@ -11,7 +11,7 @@ alg_kwargs:
   use_target_actor: true
   beta: 4.0
   alpha: null
-  init_steps: 500
+  init_steps: 1
   exp_clip: 8.0
 
 optim: Adam

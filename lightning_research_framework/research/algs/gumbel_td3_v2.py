@@ -12,7 +12,7 @@ def gumbel_loss(pred, label, beta, clip):
     loss = torch.exp(z) - z - 1
     return loss.mean()
 
-def gumbel_log_loss(pred, label, beta, clip):
+def gumbel_log_loss_v1(pred, label, beta, clip):
     assert pred.shape == label.shape, "Shapes were incorrect"
     z = (label - pred)/beta
     if clip is not None:
@@ -21,6 +21,26 @@ def gumbel_log_loss(pred, label, beta, clip):
     loss_2 =  z + 1
     loss = beta * torch.log(loss.mean()) - loss_2.mean()
     return loss
+
+def gumbel_log_loss_v2(pred, label, beta, clip):
+    assert pred.shape == label.shape, "Shapes were incorrect"
+    z = (label - pred)/beta
+    if clip is not None:
+        z = torch.clamp(z, -clip, clip)
+    loss = torch.exp(z)
+    loss_2 =  z + 1
+    loss = torch.log(loss.mean()) - loss_2.mean()
+    return loss
+
+def gumbel_log_loss_v3(pred, label, beta, clip):
+    assert pred.shape == label.shape, "Shapes were incorrect"
+    z = (label - pred)/beta
+    if clip is not None:
+        z = torch.clamp(z, -clip, clip)
+    loss = torch.exp(z)
+    loss_2 =  z + 1
+    loss = loss.mean() - loss_2.mean()
+    return torch.log(loss)
 
 def gumbel_rescale_loss(pred, label, beta, clip):
     assert pred.shape == label.shape, "Shapes were incorrect"
@@ -81,8 +101,12 @@ class GumbelTD3V2(TD3):
             loss_fn = partial(gumbel_rescale_loss, beta=self.beta, clip=self.exp_clip)
         elif self.loss == "gumbel":
             loss_fn = partial(gumbel_loss, beta=self.beta, clip=self.exp_clip)
-        elif self.loss == "gumbel_log":
-            loss_fn = partial(gumbel_log_loss, beta=self.beta, clip=self.exp_clip)
+        elif self.loss == "gumbel_log_v1":
+            loss_fn = partial(gumbel_log_loss_v1, beta=self.beta, clip=self.exp_clip)
+        elif self.loss == "gumbel_log_v2":
+            loss_fn = partial(gumbel_log_loss_v1, beta=self.beta, clip=self.exp_clip)
+        elif self.loss == "gumbel_log_v3":
+            loss_fn = partial(gumbel_log_loss_v1, beta=self.beta, clip=self.exp_clip)
         elif self.loss == "mse":
             loss_fn = torch.nn.functional.mse_loss
         else:

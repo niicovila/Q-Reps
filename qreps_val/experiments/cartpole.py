@@ -37,15 +37,17 @@ qreps_config = {
     "beta": 2e-2,
     "saddle_point_steps": 300,
     "policy_opt_steps": 300,
-    "discount": 0.99
+    "discount": 0.99,
+    "device": "cuda" if torch.cuda.is_available() else "cpu",
 }
 
 
 def train(config: dict):
 
-    env = gym.make("CartPole-v0")
+    env = gym.make("LunarLander-v2")
     num_obs = env.observation_space.shape[0]
     num_act = env.action_space.n
+    device = config["device"]
 
     q_function = NNQFunction(
         obs_dim=num_obs, act_dim=num_act, feature_fn=IdentityFeature()
@@ -60,13 +62,13 @@ def train(config: dict):
         learner=torch.optim.Adam,
         sampler=BestResponseSampler,
         optimize_policy=False,
-        reward_transformer=lambda r: r / 10000 ,
+        reward_transformer=lambda r: r / 25000 ,
         **config,
     )
 
     trainer = Trainer()
     trainer.setup(agent, env)
-    trainer.train(num_iterations=30, max_steps=200, number_rollouts=50)
+    trainer.train(num_iterations=30, max_steps=500, number_rollouts=50)
 
 
 train(qreps_config)

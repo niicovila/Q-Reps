@@ -92,12 +92,10 @@ class AbstractAlgorithm(nn.Module, metaclass=ABCMeta):
         next_observations,
         rewards,
         actions,
-        dist_before: torch.distributions.Distribution,
-        dist_after: torch.distributions.Distribution,
         iteration,
     ):
         pol_loss = self.nll_loss(observations, next_observations, rewards, actions)
-        kl_loss = torch.distributions.kl_divergence(dist_after, dist_before).mean(0)
+        # kl_loss = torch.distributions.kl_divergence(dist_after, dist_before).mean(0)
         entropy = self.policy.distribution(observations).entropy().mean(0)
         weights = self.calc_weights(observations, next_observations, rewards, actions)
         weights = weights - torch.max(weights)
@@ -110,7 +108,7 @@ class AbstractAlgorithm(nn.Module, metaclass=ABCMeta):
             self.writer.add_scalar("train/pol_loss", pol_loss, iteration)
             self.writer.add_scalar("train/reward", torch.sum(rewards), iteration)
             self.writer.add_histogram("train/actions", actions, iteration)
-            self.writer.add_scalar("train/kl_loss_mean", kl_loss, iteration)
+            # self.writer.add_scalar("train/kl_loss_mean", kl_loss, iteration)
             self.writer.add_scalar("train/entropy_mean", entropy, iteration)
             self.writer.add_histogram("train/weights", weights, iteration)
             self.writer.add_histogram("train/reward_hist", rewards, iteration)
