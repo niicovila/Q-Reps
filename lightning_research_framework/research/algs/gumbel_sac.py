@@ -105,7 +105,6 @@ class GumbelSAC(Algorithm):
         self.init_steps = init_steps
         self.exp_clip = exp_clip
         self.beta = beta
-        assert loss in {"gumbel", "gumbel_rescale", "mse", "gumbel_log"}
         self.loss = loss
         self.value_action_noise = value_action_noise
         self.use_value_log_prob = use_value_log_prob
