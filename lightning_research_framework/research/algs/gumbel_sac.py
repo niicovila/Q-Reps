@@ -263,9 +263,9 @@ class GumbelSAC(Algorithm):
             elif self.loss == "gumbel_log_v1":
                 value_loss_fn = partial(gumbel_log_loss_v1, beta=self.beta, clip=self.exp_clip)
             elif self.loss == "gumbel_log_v2":
-                value_loss_fn = partial(gumbel_log_loss_v1, beta=self.beta, clip=self.exp_clip)
+                value_loss_fn = partial(gumbel_log_loss_v2, beta=self.beta, clip=self.exp_clip)
             elif self.loss == "gumbel_log_v3":
-                value_loss_fn = partial(gumbel_log_loss_v1, beta=self.beta, clip=self.exp_clip)
+                value_loss_fn = partial(gumbel_log_loss_v3, beta=self.beta, clip=self.exp_clip)
             elif self.loss == "mse":
                 value_loss_fn = mse_loss
             else:

@@ -110,9 +110,9 @@ class GumbelTD3(TD3):
         elif self.loss == "gumbel_log_v1":
             loss_fn = partial(gumbel_log_loss_v1, beta=self.beta, clip=self.exp_clip)
         elif self.loss == "gumbel_log_v2":
-            loss_fn = partial(gumbel_log_loss_v1, beta=self.beta, clip=self.exp_clip)
+            loss_fn = partial(gumbel_log_loss_v2, beta=self.beta, clip=self.exp_clip)
         elif self.loss == "gumbel_log_v3":
-            loss_fn = partial(gumbel_log_loss_v1, beta=self.beta, clip=self.exp_clip)
+            loss_fn = partial(gumbel_log_loss_v3, beta=self.beta, clip=self.exp_clip)
         elif self.loss == "mse":
             loss_fn = torch.nn.functional.mse_loss
         else:

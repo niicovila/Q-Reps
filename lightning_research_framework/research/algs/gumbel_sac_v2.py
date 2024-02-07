@@ -112,7 +112,6 @@ class GumbelSACV2(Algorithm):
         self.init_steps = init_steps
         self.exp_clip = exp_clip
         self.beta = beta
-        assert loss in {"gumbel", "gumbel_rescale", "mse", "gumbel_log"}
         self.loss = loss
         self.value_action_noise = value_action_noise
         self.use_value_log_prob = use_value_log_prob
@@ -256,9 +255,9 @@ class GumbelSACV2(Algorithm):
             elif self.loss == "gumbel_log_v1":
                 loss_fn = partial(gumbel_log_loss_v1, beta=self.beta, clip=self.exp_clip)
             elif self.loss == "gumbel_log_v2":
-                loss_fn = partial(gumbel_log_loss_v1, beta=self.beta, clip=self.exp_clip)
+                loss_fn = partial(gumbel_log_loss_v2, beta=self.beta, clip=self.exp_clip)
             elif self.loss == "gumbel_log_v3":
-                loss_fn = partial(gumbel_log_loss_v1, beta=self.beta, clip=self.exp_clip)
+                loss_fn = partial(gumbel_log_loss_v3, beta=self.beta, clip=self.exp_clip)
             else:
                 raise ValueError("Incorrect loss specified.")
 

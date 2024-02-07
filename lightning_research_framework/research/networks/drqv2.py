@@ -34,11 +34,6 @@ class DrQv2Encoder(nn.Module):
         else:
             raise ValueError("Invalid observation space for DRQV2 Image encoder.")
 
-        self.transform = T.Compose([
-            T.Grayscale(),
-            T.Resize((84, 84))
-        ])
-
         self.convnet = nn.Sequential(
             nn.Conv2d(1, 32, 3, stride=2),
             nn.ReLU(),
@@ -55,7 +50,6 @@ class DrQv2Encoder(nn.Module):
         with torch.no_grad():
             sample = torch.as_tensor(observation_space.sample()[None])/ 255.0 - 0.5
             sample = sample.reshape(sample.shape[0], sample.shape[3], sample.shape[1], sample.shape[2])
-            sample = self.transform(sample)
             self.repr_dim = self.convnet(sample).shape[1]
 
 
@@ -69,9 +63,8 @@ class DrQv2Encoder(nn.Module):
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         b, h, w, c = obs.shape
         obs = obs.reshape(b, c, h, w)
-        obs = obs / 255.0 - 0.5
-        obs = self.transform(obs)
-        print(obs)
+        obs = obs / 255.0
+
         h = self.convnet(obs)
         return h
 

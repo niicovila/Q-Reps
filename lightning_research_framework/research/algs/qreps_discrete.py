@@ -2,7 +2,7 @@ from .base import Algorithm
 from research.networks.base import ActorCriticValuePolicy
 from research.utils import utils
 from functools import partial
-
+import torch.distributions as D
 import torch
 import numpy as np
 import itertools
@@ -67,6 +67,8 @@ class QREPSDiscrete(Algorithm):
         self.action_range = range(self.env.action_space.n)
         self.action_range_tensor = to_device(to_tensor(self.action_range), self.device)
         self.init_steps = init_steps
+        # self.sampler = D.Categorical(logits=torch.ones(self.dataset.batch_size))
+
     @property
     def alpha(self):
         return self.log_alpha.exp()
@@ -105,10 +107,11 @@ class QREPSDiscrete(Algorithm):
             target_q = batch['reward'] + batch['discount'] * closed_solution_v
 
         q = self.network.critic(batch['obs'])
-        target_q = torch.cat([target_q.unsqueeze(1)] * 18, dim=1)
+        target_q = torch.cat([target_q.unsqueeze(1)] * self.env.action_space.n, dim=1)
         delta = target_q - q
 
         delta = delta.reshape(delta.shape[0]*delta.shape[1])
+
 
         loss_fn = partial(qreps_loss, eta=self.eta, clip=self.exp_clip, V=closed_solution_v, batch_size=self.dataset.batch_size, discount=self.dataset.discount, action_space=self.env.action_space.n)
         q_loss = loss_fn(delta)
@@ -123,14 +126,25 @@ class QREPSDiscrete(Algorithm):
 
         return dict(q_loss=q_loss.item(), target_q=target_q.mean().item())
 
-            
+    
+    def _update_sampler(self, batch):
+        pass
+
     def _update_actor(self, batch):
             obs = batch['obs'].detach()
-            _, action_probs, log_prob = self.network.actor(obs)
-            qs_pi = self.network.critic(obs).mean(dim=1)
-            entropies = torch.sum(action_probs * log_prob, dim=1)
+            with torch.no_grad():
+                target_q = self.target_network.critic(batch['obs'])
+                closed_solution_v = 1/self.eta * (torch.logsumexp( self.eta * target_q, dim=1))
             
-            actor_loss = (self.alpha.detach() * (entropies - qs_pi)).mean()
+            closed_solution_v = torch.cat([closed_solution_v.unsqueeze(1)] * self.env.action_space.n, dim=1)
+            qs_pi = self.network.critic(obs)
+            advantadge = qs_pi - closed_solution_v
+
+            _, action_probs, log_prob = self.network.actor(obs)
+            
+            term_1 = torch.sum(action_probs * self.alpha.detach()*log_prob, dim=1)
+            term_2 = torch.sum(action_probs * advantadge, dim=1)
+            actor_loss = torch.sum(term_1 - term_2)
 
             self.optim['actor'].zero_grad()
             actor_loss.backward(retain_graph=True)
@@ -180,6 +194,7 @@ class QREPSDiscrete(Algorithm):
             self._num_ep += 1
             # update metrics
             metrics['reward'] = self._episode_reward
+            print(self._episode_reward)
             metrics['length'] = self._episode_length
             metrics['num_ep'] = self._num_ep
             # Reset the environment
@@ -229,6 +244,8 @@ class QREPSDiscrete(Algorithm):
         if updating_critic:
             metrics = self._update_critic(batch)
             all_metrics.update(metrics)
+            # metrics_sampler = self._update_sampler(batch)
+            # all_metrics.update(metrics_sampler)
 
         if updating_actor:
             metrics = self._update_actor(batch)
