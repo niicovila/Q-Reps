@@ -1,10 +1,6 @@
 import logging
 import sys, os
 
-from ray import tune
-from ray.tune.search import Repeater
-from ray.tune.search.hebo import HEBOSearch
-import cv2
 sys.path.append("../")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -12,7 +8,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import gym
 import torch
-from bsuite.utils import gym_wrapper
 from torch.utils.tensorboard import SummaryWriter
 
 from qreps.algorithms import QREPS, SaddleQREPS
@@ -44,7 +39,8 @@ qreps_config = {
 
 def train(config: dict):
 
-    env = gym.make("LunarLander-v2")
+    env = gym.make("CartPole-v1", render_mode="rgb_array")
+    env = gym.wrappers.RecordVideo(env, f"videos/{'cartpole'}")
     num_obs = env.observation_space.shape[0]
     num_act = env.action_space.n
     device = config["device"]
