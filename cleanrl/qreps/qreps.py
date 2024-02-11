@@ -44,15 +44,15 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    alpha: float = 0.1
+    alpha: float = 10.0
     """the entropy regularization coefficient"""
-    autotune: bool = True
+    autotune: bool = False
     """automatic tuning of the entropy coefficient"""
     env_id: str = "ALE/Breakout-v5"
     """the id of the environment"""
     total_timesteps: int = 1000000
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-4
+    learning_rate: float = 2.5e-3
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
@@ -82,7 +82,7 @@ class Args:
     """the maximum norm for the gradient clipping"""
     target_kl: float = None
     """the target KL divergence threshold"""
-    policy_freq = 1
+    policy_freq = 2
     """the frequency of updating the policy"""
     target_network_frequency = 800
     """the frequency of updating the target network"""
@@ -124,9 +124,7 @@ def make_env(env_id, idx, capture_video, run_name):
 
 
 def elbe(delta, eta, values, gamma=0.99):
-    print(torch.exp(delta*eta).mean())
     loss = (1/eta) * torch.log(torch.exp(delta*eta).mean())
-    # print(loss)
     loss += (1-gamma)*values.mean()
     return loss
 
@@ -164,7 +162,6 @@ class SoftQNetwork(nn.Module):
             nn.ReLU(),
         )
         self.critic = nn.Sequential(layer_init(nn.Linear(512, envs.single_action_space.n)))
-
 
     def forward(self, x):
         return self.critic(self.q_network(x / 255.0))
@@ -343,40 +340,33 @@ if __name__ == "__main__":
         # Optimizing the value network
         b_inds = np.arange(args.batch_size)
         for epoch in range(args.update_epochs):
-                    np.random.shuffle(b_inds)
-                    for start in range(0, args.batch_size, args.minibatch_size):
-                        end = start + args.minibatch_size
-                        mb_inds = b_inds[start:end]
-                        _, newlogprob, newlogprobs, action_probs = actor.get_action(b_obs[mb_inds], b_actions.long()[mb_inds])
-                        newqvalue, newvalue = critic.get_values(b_obs[mb_inds])
-                        new_q_a_value = newqvalue.gather(1, b_actions[mb_inds].long().unsqueeze(1)).view(-1)
+                    _, newlogprob, newlogprobs, action_probs = actor.get_action(b_obs, b_actions.long())
                     
-                        # Critic loss
-                        delta = (b_returns[mb_inds] - new_q_a_value) ** 2
-                        critic_loss = delta.mean() ** 2
-                        print(critic_loss)
-                        # critic_loss = delta.mean() **2 # Current elbe loss produces NaNs
-                        critic_optimizer.zero_grad()
-                        critic_loss.backward()
-                        critic_optimizer.step()
+                    newqvalue, newvalue = critic.get_values(b_obs)
+                    new_q_a_value = newqvalue.gather(1, b_actions.long().unsqueeze(1)).view(-1)
+                    delta = b_returns - new_q_a_value
+                    sampler = (torch.ones((args.batch_size)) / args.batch_size).to(device)
 
-                        # Policy loss
-                        if update_policy: # TODO check when to actually updfate critic (out or inside the loop)
-                            with torch.no_grad():
-                                q_vals = critic(b_obs[mb_inds])
-                                advantage = q_vals - torch.cat([b_values[mb_inds]] * envs.single_action_space.n).reshape(args.minibatch_size, envs.single_action_space.n)
-                  
-                            policy_loss = (action_probs * (alpha * newlogprobs - advantage)).mean()
-                            # print(policy_loss)
+                    critic_loss = s_k(sampler, delta, alpha, newvalue, gamma=args.gamma)
 
-                            policy_optimizer.zero_grad()
-                            policy_loss.backward()
-                            policy_optimizer.step()
+                    critic_optimizer.zero_grad()
+                    critic_loss.backward()
+                    nn.utils.clip_grad_norm_(critic.parameters(), args.max_grad_norm)
+                    critic_optimizer.step()
+
+                    if update_policy:
+                        with torch.no_grad(): q_vals = critic(b_obs)
+                        policy_loss = (action_probs * ((1 / alpha) * newlogprobs - q_vals)).mean()
+
+                        policy_optimizer.zero_grad()
+                        policy_loss.backward()
+                        nn.utils.clip_grad_norm_(actor.parameters(), args.max_grad_norm)
+                        policy_optimizer.step()
                     # update the target networks
                             
-        if global_step % args.target_network_frequency == 0:
-            for param, target_param in zip(critic.parameters(), target_critic.parameters()):
-                target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+        # if global_step % args.target_network_frequency == 0:
+        #     for param, target_param in zip(critic.parameters(), target_critic.parameters()):
+        #         target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
             # for param, target_param in zip(qf2.parameters(), target_critic.parameters()):
             #     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
                             
