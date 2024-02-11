@@ -132,17 +132,22 @@ def s_k(sampler, delta, eta, values, gamma=0.99):
     loss += (1-gamma)*values.mean()
     return loss
 
-def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
-    torch.nn.init.orthogonal_(layer.weight, std)
+# def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
+#     torch.nn.init.orthogonal_(layer.weight, std)
+#     torch.nn.init.constant_(layer.bias, bias_const)
+#     return layer
+
+
+def layer_init(layer, bias_const=0.0):
+    nn.init.kaiming_normal_(layer.weight)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
-
-class Agent(nn.Module):
-    def __init__(self, envs, alpha = 1):
+class SoftQNetwork(nn.Module):
+    def __init__(self, envs, alpha=1):
         super().__init__()
+        obs_shape = envs.single_observation_space.shape
         self.alpha = alpha
-
         self.q_network = nn.Sequential(
             layer_init(nn.Conv2d(4, 32, 8, stride=4)),
             nn.ReLU(),
@@ -154,43 +159,49 @@ class Agent(nn.Module):
             layer_init(nn.Linear(64 * 7 * 7, 512)),
             nn.ReLU(),
         )
-        
+        self.critic = layer_init(nn.Linear(512, envs.single_action_space.n))
+
+
+    def forward(self, x):
+        return self.critic(self.q_network(x / 255.0))
+    
+    def get_values(self, x):
+        q = self.forward(x)
+        value = (1/self.alpha)*torch.logsumexp(q * self.alpha, dim=1).view(-1, 1)
+        return q, value
+    
+class Actor(nn.Module):
+    def __init__(self, envs):
+        super().__init__()    
         self.actor_network = nn.Sequential(
             layer_init(nn.Conv2d(4, 32, 8, stride=4)),
             nn.ReLU(),
             layer_init(nn.Conv2d(32, 64, 4, stride=2)),
             nn.ReLU(),
             layer_init(nn.Conv2d(64, 64, 3, stride=1)),
-            nn.ReLU(),
             nn.Flatten(),
+            nn.ReLU(),
             layer_init(nn.Linear(64 * 7 * 7, 512)),
             nn.ReLU(),
         )
 
-        self.sampler = nn.Sequential(
-            layer_init(nn.Linear(512, envs.single_action_space.n), std=0.01),
-        )
-        self.actor = layer_init(nn.Linear(512, envs.single_action_space.n), std=0.01)
-        self.critic = layer_init(nn.Linear(512, envs.single_action_space.n), std=1)
+        self.actor = layer_init(nn.Linear(512, envs.single_action_space.n))
 
-    def get_value(self, x):
-        q = self.critic(self.q_network(x / 255.0))  
-        value = (1/self.alpha)*torch.logsumexp(q * self.alpha, dim=1).view(-1, 1)
-        return value
+    def forward(self, x):
+        x = self.actor_network(x)
+        logits = self.actor(x)
+        return logits
     
-    def get_q_value(self, x):
-        return self.critic(self.q_network(x / 255.0))
-    
-    def get_action_and_value(self, x, action=None):
-        hidden = self.actor_network(x / 255.0)
-        logits = self.actor(hidden)
+    def get_action(self, x, action=None):
+        logits = self(x / 255.0)
+
         policy_dist = Categorical(logits=logits)
         log_probs = F.log_softmax(logits, dim=1)
         action_probs = policy_dist.probs
-
         if action is None:
             action = policy_dist.sample()
-        return action, policy_dist.log_prob(action), log_probs, action_probs, self.get_value(x)
+
+        return action, policy_dist.log_prob(action), log_probs, action_probs
 
 
 if __name__ == "__main__":
@@ -232,12 +243,10 @@ if __name__ == "__main__":
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    agent = Agent(envs).to(device)
-    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
-    critic_params = itertools.chain(agent.q_network.parameters(), agent.critic.parameters())
-    actor_params = itertools.chain(agent.actor_network.parameters(), agent.actor.parameters())
-    critic_optimizer = optim.Adam(critic_params, lr=args.learning_rate, eps=1e-5)
-    policy_optimizer = optim.Adam(actor_params, lr=args.learning_rate, eps=1e-5)
+    critic = SoftQNetwork(envs).to(device)
+    actor = Actor(envs).to(device)
+    critic_optimizer = optim.Adam(critic.parameters(), lr=args.learning_rate, eps=1e-5)
+    policy_optimizer = optim.Adam(actor.parameters(), lr=args.learning_rate, eps=1e-5)
 
     if args.autotune:
         target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
@@ -281,12 +290,13 @@ if __name__ == "__main__":
 
             # ALGO LOGIC: action logic
             with torch.no_grad():        
-                action, action_prob, log_probs, action_probs, value = agent.get_action_and_value(next_obs)
-                qs[step] = agent.get_q_value(next_obs)
+                action, log_prob, log_probs, action_probs = actor.get_action(next_obs)
+                q, value = critic.get_values(next_obs)
+                qs[step] = q
                 values[step] = value.flatten()
 
             actions[step] = action
-            logprobs[step] = action_prob
+            logprobs[step] = log_prob
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
@@ -304,7 +314,8 @@ if __name__ == "__main__":
 
         # bootstrap value if not done
         with torch.no_grad():
-            next_value = agent.get_value(next_obs).reshape(1, -1)
+            qvalue, next_value = critic.get_values(next_obs)
+            next_value = next_value.flatten()
             returns = torch.zeros_like(rewards).to(device)
             for t in reversed(range(args.num_steps)):
                 if t == args.num_steps - 1:
@@ -317,9 +328,7 @@ if __name__ == "__main__":
             
             target_q = torch.cat([returns.unsqueeze(1)] * envs.single_action_space.n, dim=1).reshape(args.num_steps, args.num_envs, envs.single_action_space.n)
             advantages = target_q - qs
-        
-        
-    
+        print("Advantages:", advantages.shape)
         # flatten the batch
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_logprobs = logprobs.reshape(-1)
@@ -336,9 +345,8 @@ if __name__ == "__main__":
                     for start in range(0, args.batch_size, args.minibatch_size):
                         end = start + args.minibatch_size
                         mb_inds = b_inds[start:end]
-
-                        _, newlogprob, newlogprobs, action_probs, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds])
-                        newqvalue = agent.get_q_value(b_obs[mb_inds])
+                        _, newlogprob, newlogprobs, action_probs = actor.get_action(b_obs[mb_inds], b_actions.long()[mb_inds])
+                        newqvalue, newvalue = critic.get_values(b_obs[mb_inds])
 
                         mb_advantages = b_advantages[mb_inds]
                         if args.norm_adv:
@@ -347,7 +355,7 @@ if __name__ == "__main__":
                         # Critic loss
                         # TODO: Maybe nomrmalize here
                         delta = b_target[mb_inds] - newqvalue
-                        critic_loss = elbe(delta, alpha, newvalue)
+                        critic_loss = delta.mean() **2 # Current elbe loss produces NaNs
                         critic_optimizer.zero_grad()
                         critic_loss.backward()
                         critic_optimizer.step()
@@ -355,7 +363,10 @@ if __name__ == "__main__":
                         if update_policy: # TODO check when to actually updfate critic (out or inside the loop)
                             with torch.no_grad():
                                 advantage = newqvalue - torch.cat([b_values[mb_inds]] * envs.single_action_space.n).reshape(args.minibatch_size, envs.single_action_space.n)
+                            
+                            print(newqvalue)
                             policy_loss = (action_probs * (alpha * newlogprobs - advantage)).mean()
+                            # print(policy_loss)
 
                             policy_optimizer.zero_grad()
                             policy_loss.backward()
@@ -366,7 +377,7 @@ if __name__ == "__main__":
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
-        writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
+        writer.add_scalar("charts/learning_rate", critic_optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
