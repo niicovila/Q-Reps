@@ -7,7 +7,7 @@ alg_kwargs:
   beta: 2.0
   init_steps: 5000
   alpha: null
-  loss: gumbel_log
+  loss: gumbel_rescale
   value_action_noise: 0.0
   use_value_log_prob: False
 
