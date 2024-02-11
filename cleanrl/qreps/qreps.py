@@ -124,7 +124,9 @@ def make_env(env_id, idx, capture_video, run_name):
 
 
 def elbe(delta, eta, values, gamma=0.99):
+    print(torch.exp(delta*eta).mean())
     loss = (1/eta) * torch.log(torch.exp(delta*eta).mean())
+    # print(loss)
     loss += (1-gamma)*values.mean()
     return loss
 
@@ -245,7 +247,7 @@ if __name__ == "__main__":
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    critic = SoftQNetwork(envs).to(device)
+    critic = SoftQNetwork(envs, alpha = args.alpha).to(device)
     actor = Actor(envs).to(device)
     target_critic = SoftQNetwork(envs).to(device) 
     target_critic.load_state_dict(critic.state_dict())
@@ -318,25 +320,24 @@ if __name__ == "__main__":
 
         # bootstrap value if not done
         with torch.no_grad():
-            qvalue, next_value = critic.get_values(next_obs)
+            _, next_value = critic.get_values(next_obs)
             next_value = next_value.flatten()
-            returns = torch.zeros_like(rewards).to(device)
+            target_q = torch.zeros_like(rewards).to(device)
             for t in reversed(range(args.num_steps)):
                 if t == args.num_steps - 1:
                     nextnonterminal = 1.0 - next_done
                     nextvalues = next_value
-                    next_return = next_value
                 else:
                     nextnonterminal = 1.0 - dones[t + 1]
-                    next_return = returns[t + 1]
                     nextvalues = values[t + 1]
-                returns[t] = rewards[t] + args.gamma * next_return * nextnonterminal
+
+                target_q[t] = rewards[t] + args.gamma * nextvalues * nextnonterminal
 
         # flatten the batch
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
-        b_returns = returns.reshape(-1)
+        b_returns = target_q.reshape(-1)
         b_values = values.reshape(-1)
 
         # Optimizing the value network
@@ -352,15 +353,14 @@ if __name__ == "__main__":
                     
                         # Critic loss
                         delta = (b_returns[mb_inds] - new_q_a_value) ** 2
-                        critic_loss = elbe(delta,alpha, newvalue)
-                        print(delta.sum())
-      
+                        critic_loss = delta.mean() ** 2
+                        print(critic_loss)
                         # critic_loss = delta.mean() **2 # Current elbe loss produces NaNs
                         critic_optimizer.zero_grad()
                         critic_loss.backward()
                         critic_optimizer.step()
 
-    
+                        # Policy loss
                         if update_policy: # TODO check when to actually updfate critic (out or inside the loop)
                             with torch.no_grad():
                                 q_vals = critic(b_obs[mb_inds])
