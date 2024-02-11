@@ -43,7 +43,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "BreakoutNoFrameskip-v4"
+    env_id: str = "ALE/Breakout-v5"
     """the id of the environment"""
     total_timesteps: int = 5000000
     """total timesteps of the experiments"""
@@ -299,6 +299,15 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 qf2_a_values = qf2_values.gather(1, data.actions.long()).view(-1)
                 qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
                 qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
+                def gumbel_loss(pred, label, beta, clip):
+                    assert pred.shape == label.shape, "Shapes were incorrect"
+                    z = (label - pred)/beta
+                    if clip is not None:
+                        z = torch.clamp(z, -clip, clip)
+                    loss = torch.exp(z) - z - 1
+                    return loss.mean()
+                qf1_loss = gumbel_loss(qf1_a_values, next_q_value, 2, 10)
+                qf2_loss = gumbel_loss(qf2_a_values, next_q_value, 2, 10)
                 qf_loss = qf1_loss + qf2_loss
 
                 q_optimizer.zero_grad()
