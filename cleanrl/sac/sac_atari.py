@@ -129,11 +129,7 @@ class SoftQNetwork(nn.Module):
 
     def forward(self, x):
         x = F.relu(self.conv(x / 255.0))
-<<<<<<< HEAD
-        x = F.relu(self.fc1(x))
-=======
         x = F.tanh(self.fc1(x))
->>>>>>> b35672d (.)
         q_vals = F.relu(self.fc_q(x))
         return q_vals
 
@@ -285,18 +281,6 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 data = rb.sample(args.batch_size)
                 # CRITIC training
                 with torch.no_grad():
-<<<<<<< HEAD
-                    _, next_state_log_pi, next_state_action_probs = actor.get_action(data.next_observations)
-                    qf1_next_target = qf1_target(data.next_observations)
-                    qf2_next_target = qf2_target(data.next_observations)
-                    # we can use the action probabilities instead of MC sampling to estimate the expectation
-                    min_qf_next_target = torch.min(qf1_next_target, qf2_next_target)
-                    closed_v = alpha * torch.log((next_state_action_probs * torch.exp(min_qf_next_target / alpha)).sum(dim=-1))
-
-                    # adapt Q-target for discrete Q-function
-                    min_qf_next_target = min_qf_next_target.sum(dim=1)
-                    next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (closed_v)
-=======
                   _, next_state_log_pi, next_state_action_probs = actor.get_action(data.next_observations)
                   qf1_next_target = qf1_target(data.next_observations)
                   qf2_next_target = qf2_target(data.next_observations)
@@ -308,7 +292,6 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                   # adapt Q-target for discrete Q-function
                   min_qf_next_target = min_qf_next_target.sum(dim=1)
                   next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target)
->>>>>>> b35672d (.)
 
                 # use Q-values only for the taken actions
                 qf1_values = qf1(data.observations)
