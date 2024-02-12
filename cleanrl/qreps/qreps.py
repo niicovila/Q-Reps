@@ -66,6 +66,10 @@ class Args:
     """the soft update coefficient for the target network"""
     num_minibatches: int = 4
     """the number of mini-batches"""
+    gamma: float = 0.99
+    """the discount factor gamma"""
+    gae_lambda: float = 0.95
+    """the lambda for the general advantage estimation"""
     update_epochs: int = 4
     """the K epochs to update the policy"""
     norm_adv: bool = True
@@ -82,7 +86,7 @@ class Args:
     """the maximum norm for the gradient clipping"""
     target_kl: float = None
     """the target KL divergence threshold"""
-    policy_freq = 2
+    policy_freq = 1
     """the frequency of updating the policy"""
     target_network_frequency = 800
     """the frequency of updating the target network"""
@@ -142,6 +146,7 @@ def gumbel_loss(pred, label, beta, clip):
     loss = torch.exp(z) - z - 1
     return loss
 
+
 # def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 #     torch.nn.init.orthogonal_(layer.weight, std)
 #     torch.nn.init.constant_(layer.bias, bias_const)
@@ -187,6 +192,7 @@ class SoftQNetwork(nn.Module):
 class Actor(nn.Module):
     def __init__(self, envs):
         super().__init__()    
+
         self.actor_network = nn.Sequential(
             layer_init(nn.Conv2d(4, 32, 8, stride=4)),
             nn.ReLU(),
@@ -330,9 +336,10 @@ if __name__ == "__main__":
 
         # bootstrap value if not done
         with torch.no_grad():
-            _, next_value = critic.get_values(next_obs)
-            next_value = next_value.flatten()
-            target_q = torch.zeros_like(rewards).to(device)
+            q, next_value = critic.get_values(next_obs)
+            
+            advantages = torch.zeros_like(rewards).to(device)
+            lastgaelam = 0
             for t in reversed(range(args.num_steps)):
                 if t == args.num_steps - 1:
                     nextnonterminal = 1.0 - next_done
@@ -340,14 +347,16 @@ if __name__ == "__main__":
                 else:
                     nextnonterminal = 1.0 - dones[t + 1]
                     nextvalues = values[t + 1]
-
-                target_q[t] = rewards[t] + args.gamma * nextvalues * nextnonterminal
+                delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
+                advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+            returns = advantages + values
 
         # flatten the batch
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
-        b_returns = target_q.reshape(-1)
+        b_advantages = advantages.reshape(-1)
+        b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
 
         # Optimizing the value network
@@ -357,10 +366,10 @@ if __name__ == "__main__":
                     
                     newqvalue, newvalue = critic.get_values(b_obs)
                     new_q_a_value = newqvalue.gather(1, b_actions.long().unsqueeze(1)).view(-1)
-                    delta = b_returns - new_q_a_value
+                    delta = (b_returns - new_q_a_value)
                     sampler = (torch.ones((args.batch_size)) / args.batch_size).to(device)
-                    critic_loss = gumbel_loss(new_q_a_value, b_returns, beta=2, clip=10).mean()
-
+                    # critic_loss = gumbel_loss(new_q_a_value, b_returns, beta=2, clip=10).mean()
+                    critic_loss = 0.5*(delta **2).mean()
                     # print(loss.mean())
                     # print(b_returns[0:10])
                     # print(new_q_a_value[0:10])
@@ -369,16 +378,22 @@ if __name__ == "__main__":
 
                     critic_optimizer.zero_grad()
                     critic_loss.backward()
-                    # nn.utils.clip_grad_norm_(critic.parameters(), args.max_grad_norm)
+                    nn.utils.clip_grad_norm_(critic.parameters(), args.max_grad_norm)
                     critic_optimizer.step()
-
+                    policy_loss = 0
                     if update_policy:
-                        with torch.no_grad(): q_vals = critic(b_obs)
-                        policy_loss = (action_probs * ((1 / alpha) * newlogprobs - q_vals)).mean()
+                        with torch.no_grad(): 
+                            q_vals = critic(b_obs)
+                            new_q_a_value = q_vals.gather(1, b_actions.long().unsqueeze(1)).view(-1)
+                        
 
+                        weights = torch.clamp(alpha * new_q_a_value, -20, 20)
+      
+                        nll = -torch.mean(torch.exp(weights.detach()) * newlogprob)
+                
+   
                         policy_optimizer.zero_grad()
-                        policy_loss.backward()
-                        nn.utils.clip_grad_norm_(actor.parameters(), args.max_grad_norm)
+                        nll.backward()
                         policy_optimizer.step()
                     # update the target networks
                             
@@ -395,6 +410,8 @@ if __name__ == "__main__":
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         writer.add_scalar("charts/learning_rate", critic_optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
+        writer.add_scalar("losses/critic_loss", critic_loss, global_step)
+        writer.add_scalar("losses/actor_loss", policy_loss, global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
