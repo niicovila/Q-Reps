@@ -130,7 +130,7 @@ class SoftQNetwork(nn.Module):
     def forward(self, x):
         x = F.relu(self.conv(x / 255.0))
         x = F.relu(self.fc1(x))
-        q_vals = self.fc_q(x)
+        q_vals = F.relu(self.fc_q(x))
         return q_vals
 
 
@@ -285,12 +285,12 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     qf1_next_target = qf1_target(data.next_observations)
                     qf2_next_target = qf2_target(data.next_observations)
                     # we can use the action probabilities instead of MC sampling to estimate the expectation
-                    min_qf_next_target = next_state_action_probs * (
-                        torch.min(qf1_next_target, qf2_next_target) - alpha * next_state_log_pi
-                    )
+                    min_qf_next_target = torch.min(qf1_next_target, qf2_next_target)
+                    closed_v = alpha * torch.log((next_state_action_probs * torch.exp(min_qf_next_target / alpha)).sum(dim=-1))
+
                     # adapt Q-target for discrete Q-function
                     min_qf_next_target = min_qf_next_target.sum(dim=1)
-                    next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target)
+                    next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (closed_v)
 
                 # use Q-values only for the taken actions
                 qf1_values = qf1(data.observations)
