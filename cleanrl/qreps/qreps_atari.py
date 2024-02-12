@@ -70,7 +70,7 @@ class Args:
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
-    update_epochs: int = 4
+    update_epochs: int = 300
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
@@ -366,43 +366,34 @@ if __name__ == "__main__":
                     
                     newqvalue, newvalue = critic.get_values(b_obs)
                     new_q_a_value = newqvalue.gather(1, b_actions.long().unsqueeze(1)).view(-1)
-                    delta = (b_returns - new_q_a_value)
+                    
+                    delta = torch.abs(b_returns - new_q_a_value)
+                    
                     sampler = (torch.ones((args.batch_size)) / args.batch_size).to(device)
-                    # critic_loss = gumbel_loss(new_q_a_value, b_returns, beta=2, clip=10).mean()
-                    critic_loss = 0.5*(delta **2).mean()
-                    # print(loss.mean())
-                    # print(b_returns[0:10])
-                    # print(new_q_a_value[0:10])
-                    # critic_loss = s_k(sampler, delta, alpha, newvalue, gamma=args.gamma)
-                    # critic_loss = (delta**2).mean()
+                    critic_loss = s_k(sampler, delta, alpha, newvalue, args.gamma)
 
                     critic_optimizer.zero_grad()
                     critic_loss.backward()
-                    nn.utils.clip_grad_norm_(critic.parameters(), args.max_grad_norm)
                     critic_optimizer.step()
-                    policy_loss = 0
-                    if update_policy:
-                        with torch.no_grad(): 
-                            q_vals = critic(b_obs)
-                            new_q_a_value = q_vals.gather(1, b_actions.long().unsqueeze(1)).view(-1)
-                        
 
-                        weights = torch.clamp(alpha * new_q_a_value, -20, 20)
-      
-                        nll = -torch.mean(torch.exp(weights.detach()) * newlogprob)
+                    ## Update sampler
+
+        if update_policy:
+            print("Updating Policy")
+            for i in range(5):
+                _, newlogprob, newlogprobs, action_probs = actor.get_action(b_obs, b_actions.long())
                 
-   
-                        policy_optimizer.zero_grad()
-                        nll.backward()
-                        policy_optimizer.step()
-                    # update the target networks
-                            
-        # if global_step % args.target_network_frequency == 0:
-        #     for param, target_param in zip(critic.parameters(), target_critic.parameters()):
-        #         target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-            # for param, target_param in zip(qf2.parameters(), target_critic.parameters()):
-            #     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-                            
+                with torch.no_grad(): 
+                    q_vals = critic(b_obs)
+                    new_q_a_value = q_vals.gather(1, b_actions.long().unsqueeze(1)).view(-1)
+                
+                weights = torch.clamp(alpha * new_q_a_value, -20, 20)
+                nll = (action_probs*(alpha * newlogprobs - q_vals)).mean()
+
+                policy_optimizer.zero_grad()
+                nll.backward()
+                policy_optimizer.step()
+    
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
@@ -411,7 +402,7 @@ if __name__ == "__main__":
         writer.add_scalar("charts/learning_rate", critic_optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         writer.add_scalar("losses/critic_loss", critic_loss, global_step)
-        writer.add_scalar("losses/actor_loss", policy_loss, global_step)
+        writer.add_scalar("losses/actor_loss", nll, global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
