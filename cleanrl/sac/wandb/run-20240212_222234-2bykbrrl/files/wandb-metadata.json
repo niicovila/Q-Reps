@@ -1,0 +1,36 @@
+{
+    "os": "macOS-13.4-arm64-arm-64bit",
+    "python": "3.9.5",
+    "heartbeatAt": "2024-02-12T21:22:35.574545",
+    "startedAt": "2024-02-12T21:22:34.752058",
+    "docker": null,
+    "cuda": null,
+    "args": [
+        "--track"
+    ],
+    "state": "running",
+    "program": "/Users/nicolasvila/workplace/uni/tfg/tests/cleanrl/sac/sac_atari.py",
+    "codePath": "cleanrl/sac/sac_atari.py",
+    "git": {
+        "remote": "https://github.com/niicovila/tests.git",
+        "commit": "8cd943f8113cc5562311c0fcef4e5ee1018544b5"
+    },
+    "email": "nicolas.vila01@estudiant.upf.edu",
+    "root": "/Users/nicolasvila/workplace/uni/tfg/tests",
+    "host": "Nicolass-Air.technicolor.net",
+    "username": "nicolasvila",
+    "executable": "/Users/nicolasvila/miniconda3/envs/cleanrl/bin/python",
+    "cpu_count": 8,
+    "cpu_count_logical": 8,
+    "disk": {
+        "total": 228.27386474609375,
+        "used": 11.186088562011719
+    },
+    "gpuapple": {
+        "type": "arm",
+        "vendor": "Apple"
+    },
+    "memory": {
+        "total": 8.0
+    }
+}

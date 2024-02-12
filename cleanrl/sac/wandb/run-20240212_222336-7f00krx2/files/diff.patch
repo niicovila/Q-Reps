@@ -1,0 +1,127 @@
+diff --git a/cleanrl/ppo/runs/BreakoutNoFrameskip-v4__ppo_atari__1__1707730126/events.out.tfevents.1707730126.poblenou-129-99.eduroamcp.upf.edu.28728.0 b/cleanrl/ppo/runs/BreakoutNoFrameskip-v4__ppo_atari__1__1707730126/events.out.tfevents.1707730126.poblenou-129-99.eduroamcp.upf.edu.28728.0
+deleted file mode 100644
+index d96268c..0000000
+Binary files a/cleanrl/ppo/runs/BreakoutNoFrameskip-v4__ppo_atari__1__1707730126/events.out.tfevents.1707730126.poblenou-129-99.eduroamcp.upf.edu.28728.0 and /dev/null differ
+diff --git a/cleanrl/sac/sac_atari.py b/cleanrl/sac/sac_atari.py
+index bb69ebf..c525c60 100644
+--- a/cleanrl/sac/sac_atari.py
++++ b/cleanrl/sac/sac_atari.py
+@@ -55,7 +55,7 @@ class Args:
+     """target smoothing coefficient (default: 1)"""
+     batch_size: int = 64
+     """the batch size of sample from the reply memory"""
+-    learning_starts: int = 1
++    learning_starts: int = 2e4
+     """timestep to start learning"""
+     policy_lr: float = 3e-4
+     """the learning rate of the policy network optimizer"""
+@@ -129,8 +129,8 @@ class SoftQNetwork(nn.Module):
+ 
+     def forward(self, x):
+         x = F.relu(self.conv(x / 255.0))
+-        x = F.relu(self.fc1(x))
+-        q_vals = self.fc_q(x)
++        x = F.tanh(self.fc1(x))
++        q_vals = F.relu(self.fc_q(x))
+         return q_vals
+ 
+ 
+@@ -274,31 +274,40 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
+ 
+         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
+         obs = next_obs
+-
++        beta = 2
+         # ALGO LOGIC: training.
+         if global_step > args.learning_starts:
+             if global_step % args.update_frequency == 0:
+                 data = rb.sample(args.batch_size)
+                 # CRITIC training
+                 with torch.no_grad():
+-                    _, next_state_log_pi, next_state_action_probs = actor.get_action(data.next_observations)
+-                    qf1_next_target = qf1_target(data.next_observations)
+-                    qf2_next_target = qf2_target(data.next_observations)
+-                    # we can use the action probabilities instead of MC sampling to estimate the expectation
+-                    min_qf_next_target = next_state_action_probs * (
+-                        torch.min(qf1_next_target, qf2_next_target) - alpha * next_state_log_pi
+-                    )
+-                    # adapt Q-target for discrete Q-function
+-                    min_qf_next_target = min_qf_next_target.sum(dim=1)
+-                    next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target)
++                  _, next_state_log_pi, next_state_action_probs = actor.get_action(data.next_observations)
++                  qf1_next_target = qf1_target(data.next_observations)
++                  qf2_next_target = qf2_target(data.next_observations)
++                  # we can use the action probabilities instead of MC sampling to estimate the expectation
++                    
++                  min_qf_next_target = next_state_action_probs * (
++                      torch.min(qf1_next_target, qf2_next_target) - alpha * next_state_log_pi
++                  )
++                  # adapt Q-target for discrete Q-function
++                  min_qf_next_target = min_qf_next_target.sum(dim=1)
++                  next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target)
+ 
+                 # use Q-values only for the taken actions
+                 qf1_values = qf1(data.observations)
+                 qf2_values = qf2(data.observations)
++
++                
++                with torch.no_grad():
++                  _, state_log_pi, state_action_probs = actor.get_action(data.observations)
++                  values = next_state_action_probs * (
++                                    torch.min(qf1_values, qf2_values) - alpha * next_state_log_pi
++                                )
+                 qf1_a_values = qf1_values.gather(1, data.actions.long()).view(-1)
+                 qf2_a_values = qf2_values.gather(1, data.actions.long()).view(-1)
+-                qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
+-                qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
++                # qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
++                # qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
++                
+                 def gumbel_rescale_loss(pred, label, beta, clip):
+                     assert pred.shape == label.shape, "Shapes were incorrect"
+                     z = (label - pred)/beta
+@@ -318,16 +327,29 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
+                     loss = torch.exp(z) - z - 1
+                     return loss.mean()
+ 
+-                def elbe_loss(pred, label, beta, clip):
+-                    assert pred.shape == label.shape, "Shapes were incorrect"
+-                    z = (label - pred)/beta
++                def s_k(sampler, delta, eta, values, gamma=0.99):
++                    term = delta - (beta)*torch.log(sampler.shape[0] * sampler)
++                    loss = torch.sum(sampler*term)
++                    loss += (1-gamma)*values.mean()
++                    return loss
++
++                def elbe_loss(delta, values, beta, clip=None):
++                    
++                    z = (delta)/beta
+                     if clip is not None:
+                         z = torch.clamp(z, -clip, clip)
+-                    loss = torch.exp(z)
+-                    return torch.log(loss.mean())
++                    loss =  torch.exp(z)
++                    loss_v2 = (1 - 0.99) * values.mean()
++                    return beta * torch.log(loss.mean()) + loss_v2
++
++                sampler = (torch.ones((args.batch_size)) / args.batch_size).to(device)
++                delta_1 = next_q_value - qf1_a_values
++                delta_2 = next_q_value - qf2_a_values
++                
++                qf1_loss = elbe_loss(delta_1, values, beta)
++                qf2_loss = elbe_loss(delta_2, values, beta)
+                 
+-                qf1_loss = elbe_loss(qf1_a_values, next_q_value, 1, 10)
+-                qf2_loss = elbe_loss(qf2_a_values, next_q_value, 1, 10)
++      
+                 qf_loss = qf1_loss + qf2_loss
+ 
+                 q_optimizer.zero_grad()
+@@ -340,6 +362,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
+                     qf1_values = qf1(data.observations)
+                     qf2_values = qf2(data.observations)
+                     min_qf_values = torch.min(qf1_values, qf2_values)
++                # print(min_qf_values)
+                 # no need for reparameterization, the expectation can be calculated for discrete actions
+                 actor_loss = (action_probs * ((alpha * log_pi) - min_qf_values)).mean()
+ 
