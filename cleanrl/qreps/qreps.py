@@ -346,12 +346,15 @@ if __name__ == "__main__":
                     new_q_a_value = newqvalue.gather(1, b_actions.long().unsqueeze(1)).view(-1)
                     delta = b_returns - new_q_a_value
                     sampler = (torch.ones((args.batch_size)) / args.batch_size).to(device)
-
-                    critic_loss = s_k(sampler, delta, alpha, newvalue, gamma=args.gamma)
+                    
+                    # print(b_returns[0:10])
+                    # print(new_q_a_value[0:10])
+                    # critic_loss = s_k(sampler, delta, alpha, newvalue, gamma=args.gamma)
+                    critic_loss = (delta**2).mean()
 
                     critic_optimizer.zero_grad()
                     critic_loss.backward()
-                    nn.utils.clip_grad_norm_(critic.parameters(), args.max_grad_norm)
+                    # nn.utils.clip_grad_norm_(critic.parameters(), args.max_grad_norm)
                     critic_optimizer.step()
 
                     if update_policy:
