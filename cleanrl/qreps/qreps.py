@@ -48,7 +48,7 @@ class Args:
     """the entropy regularization coefficient"""
     autotune: bool = False
     """automatic tuning of the entropy coefficient"""
-    env_id: str = "ALE/Breakout-v5"
+    env_id: str = "BreakoutNoFrameskip-v4"
     """the id of the environment"""
     total_timesteps: int = 1000000
     """total timesteps of the experiments"""
@@ -134,6 +134,14 @@ def s_k(sampler, delta, eta, values, gamma=0.99):
     loss += (1-gamma)*values.mean()
     return loss
 
+def gumbel_loss(pred, label, beta, clip):
+    assert pred.shape == label.shape, "Shapes were incorrect"
+    z = (label - pred)/beta
+    if clip is not None:
+        z = torch.clamp(z, -clip, clip)
+    loss = torch.exp(z) - z - 1
+    return loss
+
 # def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 #     torch.nn.init.orthogonal_(layer.weight, std)
 #     torch.nn.init.constant_(layer.bias, bias_const)
@@ -162,14 +170,19 @@ class SoftQNetwork(nn.Module):
             nn.ReLU(),
         )
         self.critic = nn.Sequential(layer_init(nn.Linear(512, envs.single_action_space.n)))
+        self.values = nn.Sequential(layer_init(nn.Linear(512, 1)))
 
     def forward(self, x):
         return self.critic(self.q_network(x / 255.0))
     
     def get_values(self, x):
         q = self.forward(x)
-        value = (1/self.alpha)*torch.logsumexp(q * self.alpha, dim=1).view(-1, 1)
-        return q, value
+        vv = (1/self.alpha) * torch.log(torch.exp(q*self.alpha).sum(dim=1))
+        value = (1/self.alpha)*torch.logsumexp(q * self.alpha, dim=1).view(-1)
+        return q, vv
+    
+    def get_value(self, x):
+        return self.values(self.q_network(x / 255.0))
     
 class Actor(nn.Module):
     def __init__(self, envs):
@@ -346,11 +359,13 @@ if __name__ == "__main__":
                     new_q_a_value = newqvalue.gather(1, b_actions.long().unsqueeze(1)).view(-1)
                     delta = b_returns - new_q_a_value
                     sampler = (torch.ones((args.batch_size)) / args.batch_size).to(device)
-                    
+                    critic_loss = gumbel_loss(new_q_a_value, b_returns, beta=2, clip=10).mean()
+
+                    # print(loss.mean())
                     # print(b_returns[0:10])
                     # print(new_q_a_value[0:10])
-                    # critic_loss = s_k(sampler, delta, alpha, newvalue, gamma=args.gamma)
-                    critic_loss = (delta**2).mean()
+                    # critic_loss = s_k(sampler, delta, alpha, newvalue, gamma=args.gamma)
+                    # critic_loss = (delta**2).mean()
 
                     critic_optimizer.zero_grad()
                     critic_loss.backward()

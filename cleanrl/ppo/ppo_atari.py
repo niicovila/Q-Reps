@@ -42,7 +42,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "ALE/Breakout-v5"
+    env_id: str = "BreakoutNoFrameskip-v4"
     """the id of the environment"""
     total_timesteps: int = 10000000
     """total timesteps of the experiments"""
