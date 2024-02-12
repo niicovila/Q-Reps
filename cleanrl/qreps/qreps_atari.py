@@ -182,9 +182,8 @@ class SoftQNetwork(nn.Module):
     
     def get_values(self, x):
         q = self.forward(x)
-        vv = (1/self.alpha) * torch.log(torch.exp(q*self.alpha).sum(dim=1))
-        value = (1/self.alpha)*torch.logsumexp(q * self.alpha, dim=1).view(-1)
-        return q, vv
+        value = torch.logsumexp(q * self.alpha, dim=-1).view(-1)/self.alpha
+        return q, value
     
     def get_value(self, x):
         return self.values(self.q_network(x / 255.0))
