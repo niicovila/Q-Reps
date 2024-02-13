@@ -3,14 +3,13 @@ from functools import partial
 import torch.nn as nn
 import math, torch
 import torch.nn as nn
-import torchvision.models as models
 
 from qreps.feature_functions import (
     AbstractFeatureFunction,
     AbstractStateActionFeatureFunction,
 )
 from qreps.feature_functions.identity import IdentityFeature
-from torchvision import transforms
+
 from torch.nn import AvgPool2d, Conv2d
 import numpy as np
 

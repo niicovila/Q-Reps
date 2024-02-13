@@ -1,0 +1,37 @@
+{
+    "os": "macOS-13.4-arm64-arm-64bit",
+    "python": "3.11.6",
+    "heartbeatAt": "2024-02-13T12:38:36.251682",
+    "startedAt": "2024-02-13T12:38:35.592964",
+    "docker": null,
+    "cuda": null,
+    "args": [],
+    "state": "running",
+    "program": "/Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/experiments/cartpole.py",
+    "codePathLocal": "experiments/cartpole.py",
+    "codePath": "qreps_val/experiments/cartpole.py",
+    "git": {
+        "remote": "https://github.com/niicovila/tests.git",
+        "commit": "a6f22a96442762ace26667841920c160a5811fdf"
+    },
+    "email": "nicolas.vila01@estudiant.upf.edu",
+    "root": "/Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests",
+    "host": "Nicolass-Air.technicolor.net",
+    "username": "nicolasvila",
+    "executable": "/Users/nicolasvila/miniconda3/bin/python",
+    "cpu_count": 8,
+    "cpu_count_logical": 8,
+    "disk": {
+        "/": {
+            "total": 228.27386474609375,
+            "used": 160.33736038208008
+        }
+    },
+    "gpuapple": {
+        "type": "arm",
+        "vendor": "Apple"
+    },
+    "memory": {
+        "total": 8.0
+    }
+}

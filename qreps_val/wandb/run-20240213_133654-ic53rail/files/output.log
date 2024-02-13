@@ -1,0 +1,83 @@
+[34m[1mwandb[39m[22m: [33mWARNING[39m When using several event log directories, please call `wandb.tensorboard.patch(root_logdir="...")` before `wandb.init`
+/Users/nicolasvila/miniconda3/lib/python3.11/site-packages/gym/utils/passive_env_checker.py:233: DeprecationWarning: `np.bool8` is a deprecated alias for `np.bool_`.  (Deprecated NumPy 1.24)
+  if not isinstance(terminated, (bool, np.bool8)):
+/Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/qreps/memory/replay_buffer.py:47: UserWarning: Creating a tensor from a list of numpy.ndarrays is extremely slow. Please consider converting the list to a single numpy.ndarray with numpy.array() before converting to a tensor. (Triggered internally at /Users/runner/work/pytorch/pytorch/pytorch/torch/csrc/utils/tensor_new.cpp:264.)
+  obs_tm1 = torch.tensor(obs_tm1).float()
+Moviepy - Building video /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-0.mp4.
+Moviepy - Writing video /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-0.mp4
+Moviepy - Done !
+Moviepy - video ready /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-0.mp4
+Moviepy - Building video /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-1.mp4.
+Moviepy - Writing video /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-1.mp4
+Moviepy - Done !
+Moviepy - video ready /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-1.mp4
+Moviepy - Building video /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-8.mp4.
+Moviepy - Writing video /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-8.mp4
+Moviepy - Done !
+Moviepy - video ready /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-8.mp4
+[2024-02-13 13:37:04,923]: Iteration 0 done, Reward 0.05
+[2024-02-13 13:37:05,457]: Iteration 1 done, Reward 0.06
+[2024-02-13 13:37:05,926]: Iteration 2 done, Reward 0.07
+[2024-02-13 13:37:06,374]: Iteration 3 done, Reward 0.05
+Moviepy - Building video /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-27.mp4.
+Moviepy - Writing video /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-27.mp4
+Moviepy - Done !
+Moviepy - video ready /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-27.mp4
+[2024-02-13 13:37:06,798]: Iteration 4 done, Reward 0.06
+[2024-02-13 13:37:07,370]: Iteration 5 done, Reward 0.05
+[2024-02-13 13:37:07,808]: Iteration 6 done, Reward 0.06
+[2024-02-13 13:37:08,229]: Iteration 7 done, Reward 0.06
+[2024-02-13 13:37:08,683]: Iteration 8 done, Reward 0.05
+[2024-02-13 13:37:09,112]: Iteration 9 done, Reward 0.05
+[2024-02-13 13:37:09,513]: Iteration 10 done, Reward 0.04
+[2024-02-13 13:37:09,953]: Iteration 11 done, Reward 0.05
+[2024-02-13 13:37:10,442]: Iteration 12 done, Reward 0.04
+Moviepy - Building video /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-64.mp4.
+Moviepy - Writing video /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-64.mp4
+Moviepy - Done !
+Moviepy - video ready /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-64.mp4
+[2024-02-13 13:37:10,863]: Iteration 13 done, Reward 0.04
+[2024-02-13 13:37:11,325]: Iteration 14 done, Reward 0.05
+[2024-02-13 13:37:11,751]: Iteration 15 done, Reward 0.05
+[2024-02-13 13:37:12,175]: Iteration 16 done, Reward 0.04
+[2024-02-13 13:37:12,582]: Iteration 17 done, Reward 0.05
+[2024-02-13 13:37:12,986]: Iteration 18 done, Reward 0.04
+[2024-02-13 13:37:13,388]: Iteration 19 done, Reward 0.04
+[2024-02-13 13:37:13,831]: Iteration 20 done, Reward 0.05
+[2024-02-13 13:37:14,268]: Iteration 21 done, Reward 0.05
+[2024-02-13 13:37:14,717]: Iteration 22 done, Reward 0.05
+Moviepy - Building video /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-125.mp4.
+Moviepy - Writing video /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-125.mp4
+Moviepy - Done !
+Moviepy - video ready /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-125.mp4
+[2024-02-13 13:37:15,131]: Iteration 23 done, Reward 0.04
+[2024-02-13 13:37:15,538]: Iteration 24 done, Reward 0.05
+[2024-02-13 13:37:16,041]: Iteration 25 done, Reward 0.05
+[2024-02-13 13:37:16,495]: Iteration 26 done, Reward 0.05
+[2024-02-13 13:37:16,928]: Iteration 27 done, Reward 0.05
+[2024-02-13 13:37:17,356]: Iteration 28 done, Reward 0.05
+[2024-02-13 13:37:17,770]: Iteration 29 done, Reward 0.05
+[2024-02-13 13:37:18,179]: Iteration 30 done, Reward 0.04
+[2024-02-13 13:37:18,584]: Iteration 31 done, Reward 0.04
+[2024-02-13 13:37:19,040]: Iteration 32 done, Reward 0.05
+[2024-02-13 13:37:19,479]: Iteration 33 done, Reward 0.06
+[2024-02-13 13:37:19,936]: Iteration 34 done, Reward 0.05
+[2024-02-13 13:37:20,381]: Iteration 35 done, Reward 0.06
+[2024-02-13 13:37:20,860]: Iteration 36 done, Reward 0.06
+[2024-02-13 13:37:21,386]: Iteration 37 done, Reward 0.06
+[2024-02-13 13:37:21,866]: Iteration 38 done, Reward 0.05
+[2024-02-13 13:37:22,340]: Iteration 39 done, Reward 0.06
+Moviepy - Building video /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-216.mp4.
+Moviepy - Writing video /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-216.mp4
+[2024-02-13 13:37:22,813]: Iteration 40 done, Reward 0.05
+[2024-02-13 13:37:23,255]: Iteration 41 done, Reward 0.06
+[2024-02-13 13:37:23,721]: Iteration 42 done, Reward 0.05
+[2024-02-13 13:37:24,363]: Iteration 43 done, Reward 0.05
+Moviepy - Done !
+Moviepy - video ready /Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/videos/CartPole-v1__cartpole__66__1707827813/rl-video-episode-216.mp4
+[2024-02-13 13:37:24,883]: Iteration 44 done, Reward 0.05
+[2024-02-13 13:37:25,320]: Iteration 45 done, Reward 0.05
+[2024-02-13 13:37:25,758]: Iteration 46 done, Reward 0.05
+[2024-02-13 13:37:26,188]: Iteration 47 done, Reward 0.05
+[2024-02-13 13:37:26,697]: Iteration 48 done, Reward 0.06
+[2024-02-13 13:37:27,141]: Iteration 49 done, Reward 0.04
