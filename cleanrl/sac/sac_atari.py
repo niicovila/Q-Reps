@@ -55,7 +55,7 @@ class Args:
     """target smoothing coefficient (default: 1)"""
     batch_size: int = 64
     """the batch size of sample from the reply memory"""
-    learning_starts: int = 2e4
+    learning_starts: int = 1
     """timestep to start learning"""
     policy_lr: float = 3e-4
     """the learning rate of the policy network optimizer"""
@@ -206,7 +206,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "mps")
 
     # env setup
     envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
@@ -291,7 +291,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                   )
                   # adapt Q-target for discrete Q-function
                   min_qf_next_target = min_qf_next_target.sum(dim=1)
-                  next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target)
+                  closed_v = torch.log(torch.sum(next_state_action_probs * torch.exp(torch.min(qf1_next_target, qf2_next_target) / beta), dim=-1))
+                  next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (closed_v)
 
                 # use Q-values only for the taken actions
                 qf1_values = qf1(data.observations)
@@ -300,15 +301,13 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 
                 with torch.no_grad():
                   _, state_log_pi, state_action_probs = actor.get_action(data.observations)
-                  values = next_state_action_probs * (
-                                    torch.min(qf1_values, qf2_values) - alpha * next_state_log_pi
-                                )
+                  values = torch.log(torch.sum(next_state_action_probs * torch.exp(torch.min(qf1_values, qf2_values) / beta), dim=-1))
                 qf1_a_values = qf1_values.gather(1, data.actions.long()).view(-1)
                 qf2_a_values = qf2_values.gather(1, data.actions.long()).view(-1)
                 # qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
                 # qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
                 
-                def gumbel_rescale_loss(pred, label, beta, clip):
+                def gumbel_rescale_loss(pred, label, beta, clip=10):
                     assert pred.shape == label.shape, "Shapes were incorrect"
                     z = (label - pred)/beta
                     if clip is not None:
@@ -334,7 +333,6 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     return loss
 
                 def elbe_loss(delta, values, beta, clip=None):
-                    
                     z = (delta)/beta
                     if clip is not None:
                         z = torch.clamp(z, -clip, clip)
@@ -346,9 +344,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 delta_1 = next_q_value - qf1_a_values
                 delta_2 = next_q_value - qf2_a_values
                 
-                qf1_loss = elbe_loss(delta_1, values, beta)
-                qf2_loss = elbe_loss(delta_2, values, beta)
-                
+                qf1_loss = gumbel_rescale_loss(qf1_a_values, next_q_value, beta)
+                qf2_loss = gumbel_rescale_loss(qf2_a_values, next_q_value, beta)
       
                 qf_loss = qf1_loss + qf2_loss
 
@@ -361,9 +358,10 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 with torch.no_grad():
                     qf1_values = qf1(data.observations)
                     qf2_values = qf2(data.observations)
+                    values = torch.cat([values.unsqueeze(1)] * envs.single_action_space.n, dim=-1)
+                    
                     min_qf_values = torch.min(qf1_values, qf2_values) - values
-                # print(min_qf_values)
-                # no need for reparameterization, the expectation can be calculated for discrete actions
+
                 actor_loss = (action_probs * ((alpha * log_pi) - min_qf_values)).mean()
 
                 actor_optimizer.zero_grad()
