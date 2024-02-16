@@ -22,7 +22,7 @@ import ray.tune as tune  # Import the missing package
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    seed: int = 1
+    seed: int = 0
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
@@ -40,13 +40,13 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 100000
+    total_timesteps: int = 1000000
     """total timesteps of the experiments"""
-    learning_rate: float = 0.026027670629800284
+    learning_rate: float = 0.08
     """the learning rate of the optimizer"""
-    num_envs: int = 2
+    num_envs: int = 4
     """the number of parallel game environments"""
-    num_steps: int = 24
+    num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -54,9 +54,9 @@ class Args:
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 8
+    num_minibatches: int = 4
     """the number of mini-batches"""
-    update_epochs: int = 350
+    update_epochs: int = 300
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
@@ -72,10 +72,12 @@ class Args:
     """the maximum norm for the gradient clipping"""
     target_kl: float = None
     """the target KL divergence threshold"""
-    policy_freq: int = 8
+    policy_freq: int = 1
     """the frequency of updating the policy"""
-    alpha: float = 0.00011716782331382022 #0.02 was current best
+    alpha: float = 0.01 #0.02 was current best
     """the entropy regularization coefficient"""
+    clip_gradient_val: float = float("Inf")
+
 
     # to be filled in runtime
     batch_size: int = 0
@@ -106,9 +108,9 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 
 
 class Agent(nn.Module):
-    def __init__(self, envs, alpha = 0.5):
+    def __init__(self, envs, args):
         super(Agent, self).__init__()
-        self.alpha = alpha
+        self.alpha =args.alpha
         self.critic = nn.Sequential(
             layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
             nn.Tanh(),
@@ -123,18 +125,30 @@ class Agent(nn.Module):
             nn.Tanh(),
             layer_init(nn.Linear(64, envs.single_action_space.n), std=0.01),
         )
+        self.sampler = self.sampler_0 = Categorical(logits=torch.Tensor([1]*args.minibatch_size))
+        self.beta_hat = 0.1
+
+    def update_sampler(self, td):
+        with torch.no_grad():
+            print(self.sampler.probs)
+            importance = len(self.sampler.probs)
+            error = td - torch.log(self.sampler.probs / self.sampler_0.probs)/self.alpha
+            error = importance * error
+            logits = (self.beta_hat * error)
+            logits = logits
+            self.sampler = Categorical(logits=logits)
 
     def get_value(self, x):
-        _, _, log_probs, _ = self.get_action(x)
+        # _, _, log_probs, _ = self.get_action(x)
         q = self.critic(x)
-        v = torch.logsumexp(q * self.alpha +log_probs, dim=-1) / self.alpha
+        v = torch.logsumexp(q * self.alpha , dim=-1) / self.alpha
         return q, v
 
     def get_action(self, x, action=None):
-        # logits, _ = self.get_value(x)
-        logits = self.actor(x)
-        policy_dist = Categorical(logits=logits)
-        log_probs = F.log_softmax(logits, dim=1)
+        logits, v = self.get_value(x)
+        # logits = self.actor(x)
+        policy_dist = Categorical(logits=logits*self.alpha)
+        log_probs = F.log_softmax(logits*self.alpha, dim=1)
         action_probs = policy_dist.probs
         if action is None:
             action = policy_dist.sample()
@@ -142,6 +156,11 @@ class Agent(nn.Module):
     
 def empirical_logistic_bellman(eta, td, values, discount):
     errors = 1 / eta * torch.log(torch.exp(eta * td).mean()) + torch.mean((1 - discount) * values, 0)
+    return errors
+
+def S(sampler, td, values, args):
+    dual = sampler * td - torch.log(len(sampler)*sampler)/args.alpha
+    errors = dual.sum() + (1-args.gamma) * values.mean()
     return errors
 
 if __name__ == "__main__":
@@ -182,7 +201,7 @@ if __name__ == "__main__":
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    agent = Agent(envs).to(device)
+    agent = Agent(envs, args).to(device)
     critic_optimizer = optim.Adam(agent.critic.parameters(), lr=args.learning_rate, eps=1e-5)
     actor_optimizer = optim.Adam(agent.actor.parameters(), lr=args.learning_rate, eps=1e-5)
     alpha = args.alpha
@@ -249,7 +268,7 @@ if __name__ == "__main__":
         with torch.no_grad():
             q, next_value = agent.get_value(next_obs)
             next_value = next_value.reshape(1, -1)
-            advantages = torch.zeros_like(rewards).to(device)
+            returns = torch.zeros_like(rewards).to(device)
             lastgaelam = 0
             for t in reversed(range(args.num_steps)):
                 if t == args.num_steps - 1:
@@ -258,9 +277,8 @@ if __name__ == "__main__":
                 else:
                     nextnonterminal = 1.0 - dones[t + 1]
                     nextvalues = values[t + 1]
-                delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
-                advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
-            returns = advantages + values
+                returns[t] = rewards[t] + args.gamma * nextvalues * nextnonterminal
+                
 
         # flatten the batch
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
@@ -279,26 +297,33 @@ if __name__ == "__main__":
 
                     newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
                     new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
-                    delta = b_returns[mb_inds] - new_q_a_value
-                    critic_loss = empirical_logistic_bellman(eta=args.alpha, td=delta, values=newvalue, discount=args.gamma)
+                    td = b_returns[mb_inds] - new_q_a_value
+                    # critic_loss = empirical_logistic_bellman(eta=args.alpha, td=td, values=newvalue, discount=args.gamma)
+                    # critic_loss = critic_loss.mean()
                     # critic_loss = delta ** 2
-                    critic_loss = critic_loss.mean()
+
+                    loss = S(agent.sampler.probs, td=td, values=newvalue, args=args)
+                    # agent.update_sampler(td=td) ---> Nans
+
                     critic_optimizer.zero_grad()
-                    critic_loss.backward()
+                    loss.backward()
                     critic_optimizer.step()
+                    
 
-                    with torch.no_grad():  
-                        newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
-                        new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
-                        weights = torch.clamp(args.alpha * new_q_a_value, -20, 20)
+            # if update_policy:
+            #     np.random.shuffle(b_inds)
+            #     for start in range(0, args.batch_size, args.minibatch_size):
+            #         with torch.no_grad():  
+            #             newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
+            #             new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
+            #             weights = torch.clamp(args.alpha * (new_q_a_value-newvalue), -20, 20)
 
-                    _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs[mb_inds], b_actions.long()[mb_inds])  
-                    actor_loss = -torch.mean(torch.exp(weights)*newlogprob)
-
-                    # actor_loss = (action_probs*(newlogprobs/alpha - q_vals)).mean()
-                    actor_optimizer.zero_grad()
-                    actor_loss.backward()
-                    actor_optimizer.step()
+            #         _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs[mb_inds], b_actions.long()[mb_inds])  
+            #         actor_loss = -torch.mean(torch.exp(weights)*newlogprob)
+                    
+            #         actor_optimizer.zero_grad()
+            #         actor_loss.backward()
+            #         actor_optimizer.step()
     
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
@@ -307,7 +332,7 @@ if __name__ == "__main__":
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         writer.add_scalar("charts/learning_rate", critic_optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        writer.add_scalar("losses/critic_loss", critic_loss, global_step)
+        writer.add_scalar("losses/critic_loss", loss, global_step)
         #writer.add_scalar("losses/actor_loss", actor_loss, global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
