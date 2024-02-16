@@ -10,10 +10,13 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import tyro
+
+from ray.tune.search import Repeater
+from ray.tune.search.hebo import HEBOSearch
 from torch.distributions.categorical import Categorical
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
-
+import ray.tune as tune  # Import the missing package
 
 @dataclass
 class Args:
@@ -37,23 +40,23 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 500000
+    total_timesteps: int = 100000
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-4
+    learning_rate: float = 0.026027670629800284
     """the learning rate of the optimizer"""
-    num_envs: int = 4
+    num_envs: int = 2
     """the number of parallel game environments"""
-    num_steps: int = 128
+    num_steps: int = 24
     """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = False
+    anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.99
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 4
+    num_minibatches: int = 8
     """the number of mini-batches"""
-    update_epochs: int = 300
+    update_epochs: int = 350
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
@@ -69,9 +72,9 @@ class Args:
     """the maximum norm for the gradient clipping"""
     target_kl: float = None
     """the target KL divergence threshold"""
-    policy_freq: int = 2
+    policy_freq: int = 8
     """the frequency of updating the policy"""
-    alpha: float = 0.1
+    alpha: float = 0.00011716782331382022 #0.02 was current best
     """the entropy regularization coefficient"""
 
     # to be filled in runtime
@@ -122,14 +125,14 @@ class Agent(nn.Module):
         )
 
     def get_value(self, x):
-        
+        _, _, log_probs, _ = self.get_action(x)
         q = self.critic(x)
-        v = torch.logsumexp(q * self.alpha, dim=-1) / self.alpha
+        v = torch.logsumexp(q * self.alpha +log_probs, dim=-1) / self.alpha
         return q, v
 
     def get_action(self, x, action=None):
-        # logits = self.actor(x)
-        logits , _ = self.get_value(x)
+        # logits, _ = self.get_value(x)
+        logits = self.actor(x)
         policy_dist = Categorical(logits=logits)
         log_probs = F.log_softmax(logits, dim=1)
         action_probs = policy_dist.probs
@@ -138,7 +141,7 @@ class Agent(nn.Module):
         return action, policy_dist.log_prob(action), log_probs, action_probs
     
 def empirical_logistic_bellman(eta, td, values, discount):
-    errors = 1 / eta * torch.logsumexp(eta * td, 0) + torch.mean((1 - discount) * values, 0)
+    errors = 1 / eta * torch.log(torch.exp(eta * td).mean()) + torch.mean((1 - discount) * values, 0)
     return errors
 
 if __name__ == "__main__":
@@ -229,7 +232,6 @@ if __name__ == "__main__":
             logprobs[step] = action_logprob
 
             # TRY NOT TO MODIFY: execute the game and log data.
-            print(action)
             next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
 
             next_done = np.logical_or(terminations, truncations)
@@ -242,12 +244,12 @@ if __name__ == "__main__":
                         print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-
+        
         # bootstrap value if not done
         with torch.no_grad():
             q, next_value = agent.get_value(next_obs)
             next_value = next_value.reshape(1, -1)
-            returns = torch.zeros_like(rewards).to(device)
+            advantages = torch.zeros_like(rewards).to(device)
             lastgaelam = 0
             for t in reversed(range(args.num_steps)):
                 if t == args.num_steps - 1:
@@ -256,50 +258,47 @@ if __name__ == "__main__":
                 else:
                     nextnonterminal = 1.0 - dones[t + 1]
                     nextvalues = values[t + 1]
-                returns[t] = rewards[t] + args.gamma * nextvalues * nextnonterminal
-                #advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
-            #returns = advantages + values
+                delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
+                advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+            returns = advantages + values
 
         # flatten the batch
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
-        #b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
 
-        # Optimizing the value network
         b_inds = np.arange(args.batch_size)
+        clipfracs = []
         for epoch in range(args.update_epochs):
+            np.random.shuffle(b_inds)
+            for start in range(0, args.batch_size, args.minibatch_size):
+                    end = start + args.minibatch_size
+                    mb_inds = b_inds[start:end]
 
-                    _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs, b_actions.long())
-                    
-                    newqvalue, newvalue = agent.get_value(b_obs)
-                    new_q_a_value = newqvalue.gather(1, b_actions.long().unsqueeze(1)).view(-1)
-                    
-                    delta = b_returns - new_q_a_value
-                    critic_loss = empirical_logistic_bellman(eta=0.1, td=delta, values=newvalue, discount=args.gamma)
-                    # sampler = (torch.ones((args.batch_size)) / args.batch_size).to(device)
-
+                    newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
+                    new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
+                    delta = b_returns[mb_inds] - new_q_a_value
+                    critic_loss = empirical_logistic_bellman(eta=args.alpha, td=delta, values=newvalue, discount=args.gamma)
+                    # critic_loss = delta ** 2
+                    critic_loss = critic_loss.mean()
                     critic_optimizer.zero_grad()
                     critic_loss.backward()
-                    nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
                     critic_optimizer.step()
 
-                    ## Update sampler
+                    with torch.no_grad():  
+                        newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
+                        new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
+                        weights = torch.clamp(args.alpha * new_q_a_value, -20, 20)
 
-                    # with torch.no_grad(): 
-                    #     q_vals, v = agent.get_value(b_obs)
-                    #     new_q_a_value = q_vals.gather(1, b_actions.long().unsqueeze(1)).view(-1)
-                    
-                    # weights = torch.clamp(alpha * new_q_a_value, -20, 20)
-                    # actor_loss = (action_probs*(alpha * newlogprobs - q_vals)).mean()
-                    # # nll = -torch.mean(torch.exp(weights.detach()) * newlogprob)
-               
+                    _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs[mb_inds], b_actions.long()[mb_inds])  
+                    actor_loss = -torch.mean(torch.exp(weights)*newlogprob)
 
-                    # actor_optimizer.zero_grad()
-                    # actor_loss.backward()
-                    # actor_optimizer.step()
+                    # actor_loss = (action_probs*(newlogprobs/alpha - q_vals)).mean()
+                    actor_optimizer.zero_grad()
+                    actor_loss.backward()
+                    actor_optimizer.step()
     
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
