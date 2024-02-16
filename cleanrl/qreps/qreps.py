@@ -159,7 +159,7 @@ def empirical_logistic_bellman(eta, td, values, discount):
     return errors
 
 def S(sampler, td, values, args):
-    dual = sampler * td - torch.log(len(sampler)*sampler)/args.alpha
+    dual = sampler * (td - torch.log(len(sampler)*sampler)/args.alpha)
     errors = dual.sum() + (1-args.gamma) * values.mean()
     return errors
 
