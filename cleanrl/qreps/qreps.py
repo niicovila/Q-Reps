@@ -40,9 +40,9 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 1000000
+    total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 0.08
+    learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
@@ -56,7 +56,7 @@ class Args:
     """the lambda for the general advantage estimation"""
     num_minibatches: int = 4
     """the number of mini-batches"""
-    update_epochs: int = 300
+    update_epochs: int = 20
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
@@ -74,7 +74,7 @@ class Args:
     """the target KL divergence threshold"""
     policy_freq: int = 1
     """the frequency of updating the policy"""
-    alpha: float = 0.01 #0.02 was current best
+    alpha: float = 0.02 #0.02 was current best
     """the entropy regularization coefficient"""
     clip_gradient_val: float = float("Inf")
 
@@ -125,42 +125,42 @@ class Agent(nn.Module):
             nn.Tanh(),
             layer_init(nn.Linear(64, envs.single_action_space.n), std=0.01),
         )
-        self.sampler = self.sampler_0 = Categorical(logits=torch.Tensor([1]*args.minibatch_size))
+        self.sampler = Categorical(logits=torch.Tensor([0]*args.minibatch_size))
         self.beta_hat = 0.1
 
     def update_sampler(self, td):
-        with torch.no_grad():
-            print(self.sampler.probs)
-            importance = len(self.sampler.probs)
-            error = td - torch.log(self.sampler.probs / self.sampler_0.probs)/self.alpha
-            error = importance * error
-            logits = (self.beta_hat * error)
-            logits = logits
-            self.sampler = Categorical(logits=logits)
+        pass
 
     def get_value(self, x):
-        # _, _, log_probs, _ = self.get_action(x)
+        _, _, log_probs, _ = self.get_action(x)
         q = self.critic(x)
-        v = torch.logsumexp(q * self.alpha , dim=-1) / self.alpha
+        v = torch.logsumexp(q * self.alpha + log_probs, dim=-1) / self.alpha
         return q, v
 
     def get_action(self, x, action=None):
-        logits, v = self.get_value(x)
-        # logits = self.actor(x)
-        policy_dist = Categorical(logits=logits*self.alpha)
-        log_probs = F.log_softmax(logits*self.alpha, dim=1)
+        # logits, v = self.get_value(x)
+        logits = self.actor(x)
+        policy_dist = Categorical(logits=logits)
+        log_probs = F.log_softmax(logits, dim=1)
         action_probs = policy_dist.probs
         if action is None:
             action = policy_dist.sample()
         return action, policy_dist.log_prob(action), log_probs, action_probs
     
 def empirical_logistic_bellman(eta, td, values, discount):
-    errors = 1 / eta * torch.log(torch.exp(eta * td).mean()) + torch.mean((1 - discount) * values, 0)
+    z = eta * td
+    max_z = torch.max(z)
+    max_z = torch.where(max_z < -1.0, torch.tensor(-1.0, dtype=torch.float, device=max_z.device), max_z)
+    max_z = max_z.detach() # Detach the gradients)
+    errors = torch.log(torch.exp(z - max_z).mean())/eta 
+    errors += torch.mean((1 - discount) * values, 0)
+
     return errors
 
 def S(sampler, td, values, args):
-    dual = sampler * (td - torch.log(len(sampler)*sampler)/args.alpha)
-    errors = dual.sum() + (1-args.gamma) * values.mean()
+    dual = sampler.probs * td 
+    errors = dual.sum() - (sampler.entropy() + np.log(len(sampler.probs)))/args.alpha
+    errors +=  (1-args.gamma) * values.mean()
     return errors
 
 if __name__ == "__main__":
@@ -278,7 +278,7 @@ if __name__ == "__main__":
                     nextnonterminal = 1.0 - dones[t + 1]
                     nextvalues = values[t + 1]
                 returns[t] = rewards[t] + args.gamma * nextvalues * nextnonterminal
-                
+            
 
         # flatten the batch
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
@@ -297,33 +297,32 @@ if __name__ == "__main__":
 
                     newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
                     new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
+                    
                     td = b_returns[mb_inds] - new_q_a_value
-                    # critic_loss = empirical_logistic_bellman(eta=args.alpha, td=td, values=newvalue, discount=args.gamma)
-                    # critic_loss = critic_loss.mean()
-                    # critic_loss = delta ** 2
 
-                    loss = S(agent.sampler.probs, td=td, values=newvalue, args=args)
-                    # agent.update_sampler(td=td) ---> Nans
+                    # loss = S(agent.sampler, td=td, values=newvalue, args=args)
+                    loss = empirical_logistic_bellman(args.alpha, td, newvalue, args.gamma)
+                    agent.update_sampler(td=td)
 
                     critic_optimizer.zero_grad()
                     loss.backward()
+                    # torch.nn.utils.clip_grad_value_(agent.critic.parameters(), 1)
                     critic_optimizer.step()
                     
 
-            # if update_policy:
-            #     np.random.shuffle(b_inds)
-            #     for start in range(0, args.batch_size, args.minibatch_size):
-            #         with torch.no_grad():  
-            #             newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
-            #             new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
-            #             weights = torch.clamp(args.alpha * (new_q_a_value-newvalue), -20, 20)
+            if update_policy:
+                np.random.shuffle(b_inds)
+                for start in range(0, args.batch_size, args.minibatch_size):
+                    with torch.no_grad():  
+                        newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
+                        weights = torch.clamp(args.alpha * (newqvalue), -20, 20)
 
-            #         _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs[mb_inds], b_actions.long()[mb_inds])  
-            #         actor_loss = -torch.mean(torch.exp(weights)*newlogprob)
+                    _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs[mb_inds], b_actions.long()[mb_inds])  
+                    actor_loss = -torch.mean(torch.exp(weights)*newlogprobs)
                     
-            #         actor_optimizer.zero_grad()
-            #         actor_loss.backward()
-            #         actor_optimizer.step()
+                    actor_optimizer.zero_grad()
+                    actor_loss.backward()
+                    actor_optimizer.step()
     
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
@@ -333,8 +332,8 @@ if __name__ == "__main__":
         writer.add_scalar("charts/learning_rate", critic_optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         writer.add_scalar("losses/critic_loss", loss, global_step)
-        #writer.add_scalar("losses/actor_loss", actor_loss, global_step)
-        print("SPS:", int(global_step / (time.time() - start_time)))
+        writer.add_scalar("losses/actor_loss", actor_loss, global_step)
+        # print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
     envs.close()
