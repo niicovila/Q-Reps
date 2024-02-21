@@ -2,9 +2,7 @@
 
 # List of YAML files
 yaml_files=(
-    "/content/tests/lightning_research_framework/configs/configs_beta/test_2.yaml"
-    "/content/tests/lightning_research_framework/configs/configs_beta/test_3.yaml"
-    "/content/tests/lightning_research_framework/configs/configs_beta/test_4.yaml"
+
     "/content/tests/lightning_research_framework/configs/configs_beta/test_5.yaml"
     "/content/tests/lightning_research_framework/configs/configs_beta/test_6.yaml"
     "/content/tests/lightning_research_framework/configs/configs_beta/test_7.yaml"
