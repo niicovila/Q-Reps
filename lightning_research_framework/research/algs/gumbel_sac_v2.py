@@ -6,6 +6,8 @@ from .base import Algorithm
 from research.networks.base import ActorCriticValuePolicy
 from research.utils import utils
 from functools import partial
+import wandb
+from torch.utils.tensorboard import SummaryWriter
 
 def gumbel_loss(pred, label, beta, clip):
     assert pred.shape == label.shape, "Shapes were incorrect"
@@ -71,6 +73,7 @@ def gumbel_log_rescale_loss(pred, label, beta, clip):
 def mse_loss(pred, label):
     return (label - pred)**2
 
+
 class GumbelSACV2(Algorithm):
 
     def __init__(self, env, network_class, dataset_class, 
@@ -97,8 +100,19 @@ class GumbelSACV2(Algorithm):
         # Save values needed for optim setup.
         self.init_temperature = init_temperature
         self._alpha = alpha
+
+        # Initialize wandb
+        run_name = f'xsac_{beta}'
+        wandb.init(
+            project='XSAC',
+            entity=None,
+            sync_tensorboard=True,
+            name=run_name,
+            monitor_gym=True,
+            save_code=True,
+        )
+        self.writer = SummaryWriter(f"runs/{run_name}")
         super().__init__(env, network_class, dataset_class, **kwargs)
-       #  assert isinstance(self.network, ActorCriticValuePolicy)
 
         # Save extra parameters
         self.tau = tau
@@ -222,15 +236,9 @@ class GumbelSACV2(Algorithm):
             batch['next_obs'] = self.target_network.encoder(batch['next_obs'])
 
         if self.steps % self.critic_freq == 0:
-            # Q Loss:
-            # with torch.no_grad():
-            #     target_v = self.target_network.value(batch['next_obs'])
-            #     target_q = batch['reward'] + batch['discount']*target_v
-
             with torch.no_grad():
-                # noise = (torch.randn_like(batch['action']) * self.target_noise).clamp(-self.noise_clip, self.noise_clip)
-                net = self.target_network # if self.use_target_actor else self.network
-                noisy_next_action = (net.actor(batch['next_obs']).rsample()) # + noise).clamp(*self.action_range_tensor)
+                net = self.target_network 
+                noisy_next_action = net.actor(batch['next_obs']).rsample()
                 target_q = self.target_network.critic(batch['next_obs'], noisy_next_action)
                 target_q = torch.min(target_q, dim=0)[0]
                 closed_solution_v = (self.beta * torch.log(torch.exp(target_q/self.beta)))
@@ -238,14 +246,6 @@ class GumbelSACV2(Algorithm):
 
             qs = self.network.critic(batch['obs'], batch['action'])
 
-            # with torch.no_grad(): # Check if gumbel approximates QREPS loss
-            #     t_1 = ((1- batch['discount'].mean()) / self.dataset.batch_size - batch['discount'].mean() / self.beta) * torch.mean(closed_solution_v) 
-            #     t_2 = 1/self.beta * torch.mean(batch['reward'] - torch.mean(qs, dim=0))
-            #     difference = (t_1 - t_2)
-
-            # Note: Could also just compute the mean over a broadcasted target. TO investigate later.
-            # q_loss = sum([torch.nn.functional.mse_loss(qs[i], target_q) for i in range(qs.shape[0])])
-            
             if self.loss == "gumbel_rescale":
                 loss_fn = partial(gumbel_rescale_loss, beta=self.beta, clip=self.exp_clip)
             elif self.loss == "gumbel":
@@ -264,6 +264,7 @@ class GumbelSACV2(Algorithm):
             q_loss = sum([loss_fn(qs[i], target_q) for i in range(qs.shape[0])])
 
             self.optim['critic'].zero_grad(set_to_none=True)
+
             q_loss.backward()
             if self.max_grad_value is not None:
                 torch.nn.utils.clip_grad_value_(self.network.critic.parameters(), self.max_grad_value)
@@ -271,53 +272,13 @@ class GumbelSACV2(Algorithm):
 
             all_metrics['q_loss'] = q_loss.item()
             all_metrics['target_q'] = target_q.mean().item()
-            # all_metrics['residual'] = difference.item()
-        
+
         # Get the Q value of the current policy. This is used for the value and actor
         dist = self.network.actor(batch['obs'])  
         action = dist.rsample()
         log_prob = dist.log_prob(action).sum(dim=-1)
         qs_pi = self.network.critic(batch['obs'], action)
         q_pred = torch.min(qs_pi, dim=0)[0]
-
-        # if self.steps % self.value_freq == 0:
-
-        #     if self.value_action_noise > 0.0:
-        #         with torch.no_grad():
-        #             noise = (torch.randn_like(action) * self.value_action_noise).clamp(-0.5, 0.5)
-        #             noisy_action = (action.detach() + noise).clamp(*self.action_range_tensor)
-        #             qs_noisy = self.network.critic(batch['obs'], noisy_action)
-        #             q_noisy = torch.min(qs_noisy, dim=0)[0]
-        #             target_v_pi = (q_noisy).detach()
-        #     else:
-        #         target_v_pi = (q_pred).detach()
-
-        #     if self.use_value_log_prob:
-        #         target_v_pi = (target_v_pi  - self.alpha.detach() * log_prob).detach()
-        
-        #     v_pred = self.network.value(batch['obs'])
-        #     if self.loss == "gumbel":
-        #         value_loss_fn = partial(gumbel_loss, beta=self.beta, clip=self.exp_clip) # (v_pred, target_v_pi, beta, self.exp_clip)
-        #     elif self.loss == "gumbel_rescale":
-        #         value_loss_fn = partial(gumbel_rescale_loss, beta=self.beta, clip=self.exp_clip)
-        #     elif self.loss == "mse":
-        #         value_loss_fn = mse_loss
-        #     else:
-        #         raise ValueError("Invalid loss specified.")
-        #     value_loss = value_loss_fn(v_pred, target_v_pi)
-        #     value_loss = value_loss.mean()
-
-        #     self.optim['value'].zero_grad(set_to_none=True)
-        #     value_loss.backward()
-        #     # Gradient clipping
-        #     if self.max_grad_value is not None:
-        #         torch.nn.utils.clip_grad_value_(self.network.value.parameters(), self.max_grad_value)
-        #     if self.max_grad_norm is not None:
-        #         torch.nn.utils.clip_grad_norm_(self.network.value.parameters(), self.max_grad_norm)
-        #     self.optim['value'].step()
-
-        #     all_metrics['value_loss'] = value_loss.item()
-        #     all_metrics['target_v'] = target_v_pi.mean().item()
 
         if self.steps % self.actor_freq == 0:
             # Actor Loss
@@ -347,9 +308,8 @@ class GumbelSACV2(Algorithm):
                     target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
                 for param, target_param in zip(self.network.critic.parameters(), self.target_network.critic.parameters()):
                     target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
-                # for param, target_param in zip(self.network.value.parameters(), self.target_network.value.parameters()):
-                #     target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
+        self.writer.add_scalar("Losses/Q Loss", q_loss.item(), self.steps)
         return all_metrics
 
     def _validation_step(self, batch):
