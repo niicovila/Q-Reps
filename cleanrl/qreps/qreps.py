@@ -1,4 +1,5 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppopy
+from copy import deepcopy
 import os
 import random
 import time
@@ -11,12 +12,9 @@ import torch.nn as nn
 import torch.optim as optim
 import tyro
 
-from ray.tune.search import Repeater
-from ray.tune.search.hebo import HEBOSearch
 from torch.distributions.categorical import Categorical
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
-import ray.tune as tune  # Import the missing package
 
 @dataclass
 class Args:
@@ -42,7 +40,7 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-4
+    learning_rate: float = 0.1
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
@@ -56,7 +54,7 @@ class Args:
     """the lambda for the general advantage estimation"""
     num_minibatches: int = 4
     """the number of mini-batches"""
-    update_epochs: int = 20
+    update_epochs: int = 300
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
@@ -74,7 +72,9 @@ class Args:
     """the target KL divergence threshold"""
     policy_freq: int = 1
     """the frequency of updating the policy"""
-    alpha: float = 0.02 #0.02 was current best
+    alpha: float = 0.5 #0.02 was current best
+    """the entropy regularization coefficient"""
+    eta: float = 0.5 #0.02 was current best
     """the entropy regularization coefficient"""
     clip_gradient_val: float = float("Inf")
 
@@ -125,11 +125,6 @@ class Agent(nn.Module):
             nn.Tanh(),
             layer_init(nn.Linear(64, envs.single_action_space.n), std=0.01),
         )
-        self.sampler = Categorical(logits=torch.Tensor([0]*args.minibatch_size))
-        self.beta_hat = 0.1
-
-    def update_sampler(self, td):
-        pass
 
     def get_value(self, x):
         _, _, log_probs, _ = self.get_action(x)
@@ -146,22 +141,31 @@ class Agent(nn.Module):
         if action is None:
             action = policy_dist.sample()
         return action, policy_dist.log_prob(action), log_probs, action_probs
+
+class Sampler:
+    def __init__(self, N, beta=0.1):
+        self.n = N
+        self.beta_hat = beta
+        self.prob_dist = Categorical( probs=torch.ones(N) / N)
+        self.entropy = self.prob_dist.entropy()
+
+    def probs(self):
+        return self.prob_dist.probs
     
+    def update(self, eta, pred, label):
+        log_probs = torch.log(self.prob_dist.probs)
+        h = (label - pred) - np.log(self.n * self.prob_dist.probs)/eta
+        probs = F.softmax(self.beta_hat*h + log_probs, dim=0)
+        probs = torch.clamp(probs, min=1e-8, max=1.0)
+        self.prob_dist = Categorical(probs=probs)
+
 def empirical_logistic_bellman(eta, td, values, discount):
     z = eta * td
-    max_z = torch.max(z)
-    max_z = torch.where(max_z < -1.0, torch.tensor(-1.0, dtype=torch.float, device=max_z.device), max_z)
-    max_z = max_z.detach() # Detach the gradients)
-    errors = torch.log(torch.exp(z - max_z).mean())/eta 
-    errors += torch.mean((1 - discount) * values, 0)
+    return torch.log(torch.exp(z).mean())/eta + torch.mean((1 - discount) * values, 0)
 
-    return errors
-
-def S(sampler, td, values, args):
-    dual = sampler.probs * td 
-    errors = dual.sum() - (sampler.entropy() + np.log(len(sampler.probs)))/args.alpha
-    errors +=  (1-args.gamma) * values.mean()
-    return errors
+def S(pred, label, sampler, values, eta, discount):
+    z = label - pred
+    return (sampler.probs() * z).sum() - (sampler.entropy + np.log((sampler.n)))/eta +  (1-discount) * values.mean()
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -205,6 +209,7 @@ if __name__ == "__main__":
     critic_optimizer = optim.Adam(agent.critic.parameters(), lr=args.learning_rate, eps=1e-5)
     actor_optimizer = optim.Adam(agent.actor.parameters(), lr=args.learning_rate, eps=1e-5)
     alpha = args.alpha
+    sampler = Sampler(args.minibatch_size, beta=0.001)
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -289,6 +294,8 @@ if __name__ == "__main__":
 
         b_inds = np.arange(args.batch_size)
         clipfracs = []
+        weights_after_each_epoch = []
+
         for epoch in range(args.update_epochs):
             np.random.shuffle(b_inds)
             for start in range(0, args.batch_size, args.minibatch_size):
@@ -300,30 +307,34 @@ if __name__ == "__main__":
                     
                     td = b_returns[mb_inds] - new_q_a_value
 
-                    # loss = S(agent.sampler, td=td, values=newvalue, args=args)
-                    loss = empirical_logistic_bellman(args.alpha, td, newvalue, args.gamma)
-                    agent.update_sampler(td=td)
+                    loss = S(new_q_a_value, b_returns[mb_inds], sampler, newvalue, args.eta, args.gamma)
 
                     critic_optimizer.zero_grad()
                     loss.backward()
-                    # torch.nn.utils.clip_grad_value_(agent.critic.parameters(), 1)
                     critic_optimizer.step()
-                    
 
-            if update_policy:
-                np.random.shuffle(b_inds)
-                for start in range(0, args.batch_size, args.minibatch_size):
-                    with torch.no_grad():  
+                    sampler.update(args.eta, new_q_a_value.detach(), b_returns[mb_inds])
+
+                    with torch.no_grad():
                         newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
                         weights = torch.clamp(args.alpha * (newqvalue), -20, 20)
 
-                    _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs[mb_inds], b_actions.long()[mb_inds])  
+                    _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs[mb_inds])  
                     actor_loss = -torch.mean(torch.exp(weights)*newlogprobs)
+                    # actor_loss = (torch.exp(newlogprobs) * (newlogprobs / alpha - newqvalue)).mean()
                     
                     actor_optimizer.zero_grad()
                     actor_loss.backward()
                     actor_optimizer.step()
-    
+
+            weights_after_each_epoch.append(deepcopy(agent.critic.state_dict()))
+
+        avg_weights = {}
+        for key in weights_after_each_epoch[0].keys():
+            avg_weights[key] = sum(T[key] for T in weights_after_each_epoch) / len(weights_after_each_epoch)
+        
+        agent.critic.load_state_dict(avg_weights)
+
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
