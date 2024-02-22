@@ -233,7 +233,7 @@ class Algorithm(ABC):
         # Setup profiling immediately before we start the loop.
         start_time = current_time = time.time()
         profiling_metric_lists = defaultdict(list)
-        
+        stop = False
         while current_step < total_steps:
 
             for batch in dataloader:
@@ -318,6 +318,10 @@ class Algorithm(ABC):
                     # Evaluation episodes
                     if self.eval_env is not None and eval_ep > 0:
                         eval_metrics = eval_policy(self.eval_env, self, eval_ep)
+                        if eval_metrics['reward'] < 100 and current_step >= 125000:
+                            print("Stopping early due to poor performance")
+                            stop = True
+                            break
                         if loss_metric in eval_metrics:
                             current_validation_metric = eval_metrics[loss_metric]
                         log_from_dict(logger, eval_metrics, "eval")
@@ -345,6 +349,7 @@ class Algorithm(ABC):
                     break
                 
             self._epochs += 1
+            if stop: break
         logger.close()
 
     @abstractmethod

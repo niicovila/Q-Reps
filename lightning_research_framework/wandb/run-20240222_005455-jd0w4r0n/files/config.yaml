@@ -1,0 +1,41 @@
+wandb_version: 1
+
+_wandb:
+  desc: null
+  value:
+    code_path: code/lightning_research_framework/scripts/train.py
+    python_version: 3.11.6
+    cli_version: 0.16.2
+    framework: huggingface
+    huggingface_version: 4.35.2
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    start_time: 1708559695.383242
+    t:
+      1:
+      - 1
+      - 2
+      - 3
+      - 11
+      - 41
+      - 49
+      - 55
+      2:
+      - 1
+      - 2
+      - 3
+      - 11
+      - 41
+      - 49
+      - 55
+      3:
+      - 13
+      - 23
+      - 35
+      4: 3.11.6
+      5: 0.16.2
+      6: 4.35.2
+      8:
+      - 4
+      - 5
+      13: darwin-arm64
