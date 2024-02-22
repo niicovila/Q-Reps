@@ -1,7 +1,6 @@
-alg: GumbelSACV2
+alg: QREPSContinuous
 alg_kwargs:
-  alpha: null
-  beta: 3.0
+  beta: 0.8
   exp_clip: 10
   init_steps: 500
   init_temperature: 0.1
