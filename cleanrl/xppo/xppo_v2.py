@@ -36,9 +36,9 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "LunarLander-v2"
     """the id of the environment"""
-    total_timesteps: int = 10000000
+    total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-3
+    learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
