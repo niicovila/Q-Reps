@@ -74,10 +74,9 @@ class Args:
     """the frequency of updating the policy"""
     alpha: float = 0.5 #0.02 was current best
     """the entropy regularization coefficient"""
-    eta: float = 0.5 #0.02 was current best
+    eta: float = 0.5
     """the entropy regularization coefficient"""
     clip_gradient_val: float = float("Inf")
-
 
     # to be filled in runtime
     batch_size: int = 0
@@ -86,7 +85,6 @@ class Args:
     """the mini-batch size (computed in runtime)"""
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
-
 
 def make_env(env_id, idx, capture_video, run_name):
     def thunk():
@@ -304,17 +302,29 @@ if __name__ == "__main__":
 
                     newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
                     new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
-                    
-                    td = b_returns[mb_inds] - new_q_a_value
 
                     loss = S(new_q_a_value, b_returns[mb_inds], sampler, newvalue, args.eta, args.gamma)
-
+                    
                     critic_optimizer.zero_grad()
                     loss.backward()
                     critic_optimizer.step()
 
                     sampler.update(args.eta, new_q_a_value.detach(), b_returns[mb_inds])
 
+
+                
+            weights_after_each_epoch.append(deepcopy(agent.critic.state_dict()))
+
+        avg_weights = {}
+        for key in weights_after_each_epoch[0].keys():
+            avg_weights[key] = sum(T[key] for T in weights_after_each_epoch) / len(weights_after_each_epoch)
+        agent.critic.load_state_dict(avg_weights)
+
+        for epoch in range(args.update_epochs):
+            np.random.shuffle(b_inds)
+            for start in range(0, args.batch_size, args.minibatch_size):
+                    end = start + args.minibatch_size
+                    mb_inds = b_inds[start:end]
                     with torch.no_grad():
                         newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
                         weights = torch.clamp(args.alpha * (newqvalue), -20, 20)
@@ -322,18 +332,10 @@ if __name__ == "__main__":
                     _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs[mb_inds])  
                     actor_loss = -torch.mean(torch.exp(weights)*newlogprobs)
                     # actor_loss = (torch.exp(newlogprobs) * (newlogprobs / alpha - newqvalue)).mean()
-                    
+            
                     actor_optimizer.zero_grad()
                     actor_loss.backward()
                     actor_optimizer.step()
-
-            weights_after_each_epoch.append(deepcopy(agent.critic.state_dict()))
-
-        avg_weights = {}
-        for key in weights_after_each_epoch[0].keys():
-            avg_weights[key] = sum(T[key] for T in weights_after_each_epoch) / len(weights_after_each_epoch)
-        
-        agent.critic.load_state_dict(avg_weights)
 
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
@@ -344,7 +346,6 @@ if __name__ == "__main__":
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         writer.add_scalar("losses/critic_loss", loss, global_step)
         writer.add_scalar("losses/actor_loss", actor_loss, global_step)
-        # print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
     envs.close()
