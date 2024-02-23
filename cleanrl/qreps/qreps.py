@@ -125,8 +125,9 @@ class Agent(nn.Module):
             action = policy_dist.sample()
         return action, policy_dist.log_prob(action), log_probs, action_probs
 
-class Sampler:
+class Sampler(nn.Module):
     def __init__(self, N, beta=0.1):
+        super(Sampler, self).__init__()
         self.n = N
         self.beta_hat = beta
         self.prob_dist = Categorical( probs=torch.ones(N) / N)
@@ -192,7 +193,7 @@ if __name__ == "__main__":
     critic_optimizer = optim.Adam(agent.critic.parameters(), lr=args.learning_rate, eps=1e-5)
     actor_optimizer = optim.Adam(agent.actor.parameters(), lr=args.learning_rate, eps=1e-5)
     alpha = args.alpha
-    sampler = Sampler(args.minibatch_size, beta=0.001)
+    sampler = Sampler(args.minibatch_size, beta=0.001).to(device)
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
