@@ -68,6 +68,8 @@ class Args:
     """the maximum norm for the gradient clipping"""
     target_kl: float = None
     """the target KL divergence threshold"""
+    beta: float = 2.5
+    """the beta for the gumbel softmax"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -176,7 +178,7 @@ if __name__ == "__main__":
     agent = Agent(envs).to(device)
     optimizer_critic = optim.Adam(agent.critic.parameters(), lr=args.learning_rate, eps=1e-5)
     optimizer_actor = optim.Adam(agent.actor.parameters(), lr=args.learning_rate, eps=1e-5)
-
+    beta = args.beta
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
@@ -287,6 +289,7 @@ if __name__ == "__main__":
                 # Value loss
                 newvalue = newvalue.view(-1)
                 v_loss = gumbel_log_loss(newvalue, b_returns[mb_inds], beta, clip=10)
+
                 optimizer_critic.zero_grad()
                 v_loss.backward()
                 nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
