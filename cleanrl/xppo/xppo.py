@@ -38,7 +38,7 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 10000000
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-4
+    learning_rate: float = 2.5e-3
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
@@ -68,6 +68,8 @@ class Args:
     """the maximum norm for the gradient clipping"""
     target_kl: float = None
     """the target KL divergence threshold"""
+    beta: float = 2.5
+    """the beta for the gumbel softmax"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -186,7 +188,7 @@ if __name__ == "__main__":
 
     agent = Agent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
-
+    beta = args.beta
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
@@ -202,7 +204,6 @@ if __name__ == "__main__":
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
-    beta = 1.8
     for iteration in range(1, args.num_iterations + 1):
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
@@ -289,20 +290,7 @@ if __name__ == "__main__":
 
                 # Value loss
                 newvalue = newvalue.view(-1)
-                if args.clip_vloss:
-                    # v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
-                    v_loss_unclipped = gumbel_log_loss(newvalue, b_returns[mb_inds], beta, 10)
-
-                    v_clipped = b_values[mb_inds] + torch.clamp(
-                        newvalue - b_values[mb_inds],
-                        -args.clip_coef,
-                        args.clip_coef,
-                    )
-                    v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
-                    v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-                    v_loss = v_loss_max.mean()
-                else:
-                    v_loss = gumbel_log_loss(newvalue, b_returns[mb_inds], beta, 10)
+                v_loss = gumbel_log_loss(newvalue, b_returns[mb_inds], beta, 10)
 
                 entropy_loss = entropy.mean()
                 loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
