@@ -40,7 +40,7 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 0.1
+    learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
@@ -50,33 +50,18 @@ class Args:
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.99
     """the discount factor gamma"""
-    gae_lambda: float = 0.95
-    """the lambda for the general advantage estimation"""
     num_minibatches: int = 4
     """the number of mini-batches"""
-    update_epochs: int = 300
+    update_epochs: int = 4
     """the K epochs to update the policy"""
-    norm_adv: bool = True
-    """Toggles advantages normalization"""
-    clip_coef: float = 0.2
-    """the surrogate clipping coefficient"""
-    clip_vloss: bool = True
-    """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.01
-    """coefficient of the entropy"""
-    vf_coef: float = 0.5
-    """coefficient of the value function"""
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
-    target_kl: float = None
-    """the target KL divergence threshold"""
     policy_freq: int = 1
     """the frequency of updating the policy"""
     alpha: float = 0.5 #0.02 was current best
     """the entropy regularization coefficient"""
     eta: float = 0.5
     """the entropy regularization coefficient"""
-    clip_gradient_val: float = float("Inf")
 
     # to be filled in runtime
     batch_size: int = 0
@@ -330,8 +315,8 @@ if __name__ == "__main__":
                         weights = torch.clamp(args.alpha * (newqvalue), -20, 20)
 
                     _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs[mb_inds])  
-                    actor_loss = -torch.mean(torch.exp(weights)*newlogprobs)
-                    # actor_loss = (torch.exp(newlogprobs) * (newlogprobs / alpha - newqvalue)).mean()
+                    # actor_loss = -torch.mean(torch.exp(weights)*newlogprobs)
+                    actor_loss = (action_probs * (newlogprobs / alpha - newqvalue)).mean()
             
                     actor_optimizer.zero_grad()
                     actor_loss.backward()

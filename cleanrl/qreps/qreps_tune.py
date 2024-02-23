@@ -302,15 +302,14 @@ def main(config: dict):
     envs.close()
     writer.close()
 
-# search_alg = Hebo(metric="reward", mode="max")
+search_alg = HEBOSearch(metric="reward", mode="max")
 
-# re_search_alg = Repeater(search_alg, repeat=1)
+re_search_alg = Repeater(search_alg, repeat=2)
 
 analysis = tune.run(
     main,
     config=config,
-    # search_alg=re_search_alg,
-    resources_per_trial={"cpu": 1},
+    search_alg=re_search_alg,
     local_dir="/Users/nicolasvila/workplace/uni/tfg/tests/results_tune",
 )
 

@@ -137,17 +137,6 @@ def gumbel_log_loss(pred, label, beta, clip):
     loss = loss.mean() - loss_2.mean()
     return torch.log(loss)
 
-def gumbel_log_loss(pred, label, beta, clip):
-    assert pred.shape == label.shape, "Shapes were incorrect"
-    z = (label - pred)/beta
-    if clip is not None:
-        z = torch.clamp(z, -clip, clip)
-    max_z = torch.max(z)
-    max_z = torch.where(max_z < -1.0, torch.tensor(-1.0, dtype=torch.float, device=max_z.device), max_z)
-    max_z = max_z.detach() # Detach the gradients
-    loss = torch.exp(z - max_z) - z*torch.exp(-max_z) - torch.exp(-max_z)    
-    return torch.log(loss.mean())
-
 if __name__ == "__main__":
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
