@@ -28,7 +28,7 @@ class Args:
     """if toggled, cuda will be enabled by default"""
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "cleanRL"
+    wandb_project_name: str = "QREPS_cleanRL"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
@@ -58,9 +58,9 @@ class Args:
     """the maximum norm for the gradient clipping"""
     policy_freq: int = 1
     """the frequency of updating the policy"""
-    alpha: float = 0.5 #0.02 was current best
+    alpha: float = 0.02 #0.02 was current best
     """the entropy regularization coefficient"""
-    eta: float = 0.5
+    eta: float = 0
     """the entropy regularization coefficient"""
 
     # to be filled in runtime
@@ -125,20 +125,20 @@ class Agent(nn.Module):
             action = policy_dist.sample()
         return action, policy_dist.log_prob(action), log_probs, action_probs
 
-class Sampler(nn.Module):
-    def __init__(self, N, beta=0.1):
-        super(Sampler, self).__init__()
+class Sampler:
+    def __init__(self, N, device, beta=0.1):
         self.n = N
         self.beta_hat = beta
         self.prob_dist = Categorical( probs=torch.ones(N) / N)
-        self.entropy = self.prob_dist.entropy()
+        self.device = device
 
     def probs(self):
-        return self.prob_dist.probs
-    
+        return self.prob_dist.probs.to(self.device)
+    def entropy(self):
+        return self.prob_dist.entropy().to(self.device)
     def update(self, eta, pred, label):
-        log_probs = torch.log(self.prob_dist.probs)
-        h = (label - pred) - np.log(self.n * self.prob_dist.probs)/eta
+        log_probs = torch.log(self.probs())
+        h = (label - pred) - torch.log(self.n * self.probs())/eta
         probs = F.softmax(self.beta_hat*h + log_probs, dim=0)
         probs = torch.clamp(probs, min=1e-8, max=1.0)
         self.prob_dist = Categorical(probs=probs)
@@ -149,7 +149,7 @@ def empirical_logistic_bellman(eta, td, values, discount):
 
 def S(pred, label, sampler, values, eta, discount):
     z = label - pred
-    return (sampler.probs() * z).sum() - (sampler.entropy + np.log((sampler.n)))/eta +  (1-discount) * values.mean()
+    return (sampler.probs() * z).sum() - (sampler.entropy() + np.log((sampler.n)))/eta +  (1-discount) * values.mean()
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -192,8 +192,10 @@ if __name__ == "__main__":
     agent = Agent(envs, args).to(device)
     critic_optimizer = optim.Adam(agent.critic.parameters(), lr=args.learning_rate, eps=1e-5)
     actor_optimizer = optim.Adam(agent.actor.parameters(), lr=args.learning_rate, eps=1e-5)
-    alpha = args.alpha
-    sampler = Sampler(args.minibatch_size, beta=0.001).to(device)
+    alpha = torch.Tensor([args.alpha]).to(device)
+    if args.eta == 0: args.eta = args.alpha
+    eta = torch.Tensor([args.eta]).to(device)
+    sampler = Sampler(args.minibatch_size, device, beta=0.001)
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -316,8 +318,8 @@ if __name__ == "__main__":
                         weights = torch.clamp(args.alpha * (newqvalue), -20, 20)
 
                     _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs[mb_inds])  
-                    # actor_loss = -torch.mean(torch.exp(weights)*newlogprobs)
-                    actor_loss = (action_probs * (newlogprobs / alpha - newqvalue)).mean()
+                    actor_loss = -torch.mean(torch.exp(weights)*newlogprobs)
+                    #actor_loss = (action_probs * (newlogprobs / alpha - newqvalue)).mean()
             
                     actor_optimizer.zero_grad()
                     actor_loss.backward()

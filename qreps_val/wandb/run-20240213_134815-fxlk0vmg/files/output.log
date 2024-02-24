@@ -1,7 +1,0 @@
-Traceback (most recent call last):
-  File "/Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/experiments/cartpole.py", line 121, in <module>
-    train(qreps_config)
-  File "/Users/nicolasvila/workplace/uni/QREPS_ORIGINAL/tests/qreps_val/experiments/cartpole.py", line 100, in train
-    policy = QREPSPolicy(q_function)
-             ^^^^^^^^^^^^^^^^^^^^^^^
-TypeError: QREPSPolicy.__init__() missing 1 required positional argument: 'temp'

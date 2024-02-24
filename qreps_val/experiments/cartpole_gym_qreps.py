@@ -13,10 +13,12 @@ import ray.tune as tune
 import torch
 from bsuite.utils import gym_wrapper
 from torch.utils.tensorboard import SummaryWriter
+from qreps.algorithms.sampler import BestResponseSampler
 
 from qreps.algorithms import QREPS
 from qreps.feature_functions import IdentityFeature
 from qreps.policies import CategoricalMLP
+from qreps.policies.qreps_policy import QREPSPolicy
 from qreps.utilities.trainer import Trainer
 from qreps.valuefunctions import NNQFunction
 
@@ -28,7 +30,7 @@ logging.basicConfig(level=logging.INFO, format=FORMAT)
 SEED_OFFSET = 0
 
 config = {
-    "eta": 0.1,
+    "eta": 4.8,
     "beta": 2e-2,
     "saddle_point_steps": 300,
     "policy_opt_steps": 300,
@@ -39,7 +41,7 @@ config = {
 
 def train(config: dict):
 
-    env = gym.make("LunarLander-v2")
+    env = gym.make("CartPole-v1")
     num_obs = env.observation_space.shape[0]
     num_act = env.action_space.n
 
@@ -47,6 +49,7 @@ def train(config: dict):
         obs_dim=num_obs, act_dim=num_act, feature_fn=IdentityFeature()
     )
     policy = CategoricalMLP(num_obs, 2)
+    # policy = QREPSPolicy(q_function=q_function, temp=config["eta"])
 
     writer = SummaryWriter()
 
@@ -55,13 +58,15 @@ def train(config: dict):
         policy=policy,
         q_function=q_function,
         learner=torch.optim.Adam,
-        reward_transformer=lambda r: r,
+        sampler=BestResponseSampler,
+        optimize_policy=True,
+        reward_transformer=lambda r: r / 2500,
         **config,
     )
 
     trainer = Trainer()
     trainer.setup(agent, env)
-    trainer.train(num_iterations=100,max_steps=200,number_rollouts=100)
+    trainer.train(num_iterations=100,max_steps=500,number_rollouts=5)
 
 
 # Repeat 2 samples 10 times each.
