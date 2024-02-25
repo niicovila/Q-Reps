@@ -16,6 +16,8 @@ from torch.distributions.categorical import Categorical
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
+## Try adding the replay buffer // checking if the data storage of the transition data is done right
+
 @dataclass
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
@@ -40,28 +42,30 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-4
+    learning_rate: float = 2.5e-2
     """the learning rate of the optimizer"""
-    num_envs: int = 4
+    num_envs: int = 5
     """the number of parallel game environments"""
-    num_steps: int = 128
+    num_steps: int = 200
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.99
     """the discount factor gamma"""
-    num_minibatches: int = 4
+    num_minibatches: int = 1
     """the number of mini-batches"""
-    update_epochs: int = 4
+    update_epochs: int = 300
     """the K epochs to update the policy"""
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
     policy_freq: int = 1
     """the frequency of updating the policy"""
-    alpha: float = 0.02 #0.02 was current best
+    alpha: float = 100 #0.02 was current best
     """the entropy regularization coefficient"""
     eta: float = 0
     """the entropy regularization coefficient"""
+    parametrized: bool = True
+    """if toggled, the policy will be parametrized"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -94,6 +98,7 @@ class Agent(nn.Module):
     def __init__(self, envs, args):
         super(Agent, self).__init__()
         self.alpha =args.alpha
+        self.parametrized = args.parametrized
         self.critic = nn.Sequential(
             layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
             nn.Tanh(),
@@ -110,23 +115,37 @@ class Agent(nn.Module):
         )
 
     def get_value(self, x):
-        _, _, log_probs, _ = self.get_action(x)
-        q = self.critic(x)
-        v = torch.logsumexp(q * self.alpha + log_probs, dim=-1) / self.alpha
-        return q, v
+        if self.parametrized:
+            _, _, log_probs, _ = self.get_action(x)
+            q = self.critic(x)
+            v = torch.logsumexp(q * self.alpha + log_probs, dim=-1) / self.alpha
+            return q, v
+        else:
+            q = self.critic(x)
+            v = torch.logsumexp(q * self.alpha, dim=-1) / self.alpha
+            return q, v
 
     def get_action(self, x, action=None):
-        # logits, v = self.get_value(x)
-        logits = self.actor(x)
-        policy_dist = Categorical(logits=logits)
-        log_probs = F.log_softmax(logits, dim=1)
-        action_probs = policy_dist.probs
-        if action is None:
-            action = policy_dist.sample()
-        return action, policy_dist.log_prob(action), log_probs, action_probs
+        if not self.parametrized:
+            logits, v = self.get_value(x)
+            policy_dist = Categorical(logits=logits)
+            log_probs = F.log_softmax(logits, dim=1)
+            action_probs = policy_dist.probs
+            if action is None:
+                action = policy_dist.sample()
+
+            return action, policy_dist.log_prob(action), log_probs, action_probs
+        else:
+            logits = self.actor(x)
+            policy_dist = Categorical(logits=logits)
+            log_probs = F.log_softmax(logits, dim=1)
+            action_probs = policy_dist.probs
+            if action is None:
+                action = policy_dist.sample()
+            return action, policy_dist.log_prob(action), log_probs, action_probs
 
 class Sampler:
-    def __init__(self, N, device, beta=0.1):
+    def __init__(self, N, device, beta=0.01):
         self.n = N
         self.beta_hat = beta
         self.prob_dist = Categorical( probs=torch.ones(N) / N)
@@ -134,8 +153,10 @@ class Sampler:
 
     def probs(self):
         return self.prob_dist.probs.to(self.device)
+    
     def entropy(self):
         return self.prob_dist.entropy().to(self.device)
+    
     def update(self, eta, pred, label):
         log_probs = torch.log(self.probs())
         h = (label - pred) - torch.log(self.n * self.probs())/eta
@@ -189,6 +210,7 @@ if __name__ == "__main__":
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
+
     agent = Agent(envs, args).to(device)
     critic_optimizer = optim.Adam(agent.critic.parameters(), lr=args.learning_rate, eps=1e-5)
     actor_optimizer = optim.Adam(agent.actor.parameters(), lr=args.learning_rate, eps=1e-5)
@@ -213,6 +235,7 @@ if __name__ == "__main__":
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
     update_policy = False
+    actor_loss = 0
     for iteration in range(1, args.num_iterations + 1):
 
         if args.num_iterations % args.policy_freq == 0:
@@ -308,22 +331,23 @@ if __name__ == "__main__":
             avg_weights[key] = sum(T[key] for T in weights_after_each_epoch) / len(weights_after_each_epoch)
         agent.critic.load_state_dict(avg_weights)
 
-        for epoch in range(args.update_epochs):
-            np.random.shuffle(b_inds)
-            for start in range(0, args.batch_size, args.minibatch_size):
-                    end = start + args.minibatch_size
-                    mb_inds = b_inds[start:end]
-                    with torch.no_grad():
-                        newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
-                        weights = torch.clamp(args.alpha * (newqvalue), -20, 20)
+        if args.parametrized:
+            for epoch in range(args.update_epochs):
+                np.random.shuffle(b_inds)
+                for start in range(0, args.batch_size, args.minibatch_size):
+                        end = start + args.minibatch_size
+                        mb_inds = b_inds[start:end]
+                        with torch.no_grad():
+                            newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
+                            weights = torch.clamp(args.alpha * (newqvalue), -20, 20)
 
-                    _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs[mb_inds])  
-                    actor_loss = -torch.mean(torch.exp(weights)*newlogprobs)
-                    #actor_loss = (action_probs * (newlogprobs / alpha - newqvalue)).mean()
-            
-                    actor_optimizer.zero_grad()
-                    actor_loss.backward()
-                    actor_optimizer.step()
+                        _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs[mb_inds])  
+                        actor_loss = -torch.mean(torch.exp(weights)*newlogprobs)
+                        #actor_loss = (action_probs * (newlogprobs / alpha - newqvalue)).mean()
+                
+                        actor_optimizer.zero_grad()
+                        actor_loss.backward()
+                        actor_optimizer.step()
 
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)

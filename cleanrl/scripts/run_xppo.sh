@@ -1,6 +1,6 @@
 #!/bin/bash
 
-betas =( $(seq 0.5 3 0.5) )
+betas=( $(seq 0.1 0.1 1) )
 
 for beta in "${betas[@]}"
 do
