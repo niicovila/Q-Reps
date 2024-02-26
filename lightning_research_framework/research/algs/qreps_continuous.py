@@ -2,10 +2,12 @@ import torch
 import numpy as np
 import itertools
 
+import torch.distributions as D
 from .base import Algorithm
 from research.networks.base import ActorCriticValuePolicy
 from research.utils import utils
 from functools import partial
+import torch.nn.functional as F
 import wandb
 from torch.utils.tensorboard import SummaryWriter
 
@@ -17,7 +19,10 @@ def gumbel_log_loss_v3(pred, label, beta, clip):
     loss = torch.exp(z)
     loss_2 =  z + 1
     loss = loss.mean() #- loss_2.mean()
-    return torch.log(loss) * beta
+    return torch.log(loss) #* beta
+
+def mse_loss(pred, label):
+    return ((label - pred)**2).mean()
 
 def qreps_loss(pred, label, eta, V, discount, clip = None):
     assert pred.shape == label.shape, "Shapes were incorrect"
@@ -27,6 +32,31 @@ def qreps_loss(pred, label, eta, V, discount, clip = None):
     loss = (1/eta) * torch.log((torch.exp(z)).mean())
     loss += (1 - discount) * V.mean()
     return loss.mean()
+
+class Sampler:
+    def __init__(self, N, beta=0.001):
+        self.n = N
+        self.beta_hat = beta
+        self.prob_dist = D.Categorical( probs=torch.ones(N) / N)
+        self.entropy = self.prob_dist.entropy()
+    def probs(self):
+        return self.prob_dist.probs
+    def update(self, beta, label, pred):
+        log_probs = F.log_softmax(self.prob_dist.logits)
+        h = (label - pred) - beta*np.log(self.n * self.prob_dist.probs)
+        probs = F.softmax(self.beta_hat*h + log_probs, dim=0)
+        probs = torch.clamp(probs, min=1e-8, max=1.0)
+        self.prob_dist = D.Categorical(probs=probs)
+
+def S(pred, label, sampler, values, beta, discount):
+    
+    z = label - pred
+    dual = sampler.probs() * z 
+    errors = dual.sum() - (sampler.entropy + np.log((sampler.n)))*beta
+    # errors +=  (1-discount) * values.mean()
+    return errors
+
+
 
 class QREPSContinuous(Algorithm):
 
@@ -56,15 +86,15 @@ class QREPSContinuous(Algorithm):
         self._alpha = alpha
 
         # Initialize wandb
-        run_name = f'xsac_{beta}'
-        wandb.init(
-            project='QREPS_CONTINUOUS',
-            entity=None,
-            sync_tensorboard=True,
-            name=run_name,
-            monitor_gym=True,
-            save_code=True,
-        )
+        run_name = f'qreps_{beta}'
+        # wandb.init(
+        #     project='QREPS_CONTINUOUS',
+        #     entity=None,
+        #     sync_tensorboard=True,
+        #     name=run_name,
+        #     monitor_gym=True,
+        #     save_code=True,
+        # )
         self.writer = SummaryWriter(f"runs/{run_name}")
         super().__init__(env, network_class, dataset_class, **kwargs)
 
@@ -88,6 +118,8 @@ class QREPSContinuous(Algorithm):
         # Gradient clipping
         self.max_grad_norm = max_grad_norm
         self.max_grad_value = max_grad_value
+
+
 
     @property
     def alpha(self):
@@ -171,6 +203,8 @@ class QREPSContinuous(Algorithm):
         self._num_ep = 0
         self._env_steps = 0
         self.dataset.add(self._current_obs) # Store the initial reset observation!
+        self.sampler = Sampler(self.dataset.batch_size)
+
 
     def _train_step(self, batch):
         all_metrics = {}
@@ -196,13 +230,17 @@ class QREPSContinuous(Algorithm):
                 target_q = self.target_network.critic(batch['next_obs'], noisy_next_action)
                 target_q = torch.min(target_q, dim=0)[0]
                 closed_solution_v = (self.beta * torch.log(torch.exp(target_q/self.beta)))
-                target_q = batch['reward'] + batch['discount']*closed_solution_v
+                target_q = batch['reward'] + batch['discount'] * closed_solution_v
+
+                print(closed_solution_v.mean())
 
             qs = self.network.critic(batch['obs'], batch['action'])
 
-            loss_fn = partial(gumbel_log_loss_v3, beta=self.beta, clip=self.exp_clip)
+            loss_fn = partial(S, sampler=self.sampler, values=closed_solution_v, beta=self.beta, discount=self.dataset.discount)
             q_loss = sum([loss_fn(qs[i], target_q) for i in range(qs.shape[0])])
-
+            q_p = torch.min(qs, dim=0)[0]
+            self.sampler.update(self.beta, target_q, q_p.detach())
+    
             self.optim['critic'].zero_grad(set_to_none=True)
             q_loss.backward()
             if self.max_grad_value is not None:

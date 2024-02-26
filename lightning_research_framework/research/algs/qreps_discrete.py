@@ -10,6 +10,18 @@ import itertools
 from research.networks.base import ActorCriticPolicy
 from research.utils.utils import to_tensor, to_device
 
+class Sampler:
+    def __init__(self, N):
+        self.n = N
+        self.prob_dist = D.Categorical( probs=torch.ones(N) / N)
+        self.entropy = self.prob_dist.entropy()
+    def probs(self):
+        return self.prob_dist.probs
+    def update(self, probs):
+        pass
+
+
+
 def qreps_loss(delta, eta, clip, V, batch_size, discount, action_space):
     t1 = sum(torch.exp(eta * delta))
     t1 /= (batch_size * action_space)
@@ -20,6 +32,12 @@ def qreps_loss(delta, eta, clip, V, batch_size, discount, action_space):
 def mse_loss(pred, label):
     return (label - pred)**2
 
+def S(sampler, label, pred, values, beta, discount):
+    z = label - pred
+    dual = sampler.probs() * z 
+    errors = dual.sum() - (sampler.entropy + np.log((sampler.n)))*beta
+    # errors +=  (1-discount) * values.mean()
+    return errors
 
 class QREPSDiscrete(Algorithm):
 
@@ -47,7 +65,6 @@ class QREPSDiscrete(Algorithm):
         self._alpha = alpha
         super().__init__(env, network_class, dataset_class, **kwargs)
         assert isinstance(self.network, ActorCriticPolicy)
-
 
 
         self.beta = beta
