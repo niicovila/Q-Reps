@@ -5,17 +5,18 @@ from dm_env import Environment, truncation
 class Trainer:
     """Trainer for running environments together with algorithms"""
 
-    def __init__(self):
+    def __init__(self, seed):
         self.env = None
         self.algo = None
         self.iter = 0
+        self.seed = seed
 
     def setup(self, algo, env: Environment):
         self.env = env
         self.algo = algo
 
     def _obtain_episode(self, max_steps):
-        obs, info = self.env.reset()
+        obs, info = self.env.reset(seed=self.seed)
         step = 0
         done = False
         rewards = []

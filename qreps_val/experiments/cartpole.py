@@ -49,9 +49,9 @@ SEED_OFFSET = 0
 
 qreps_config = {
     "env_id": "CartPole-v1",  
-    "track": True,
-    "eta": 4.8,
-    "beta": 8e-2,
+    "track": False,
+    "eta": 0.02,
+    "beta": 2e-4,
     "saddle_point_steps": 300,
     "policy_opt_steps": 300,
     "discount": 0.99,
@@ -60,7 +60,7 @@ qreps_config = {
     "seed" : 0,
     "exp_name": os.path.basename(__file__)[: -len(".py")],
     "num_envs": 1,
-    "capture_video": True,
+    "capture_video": False,
 }
 
 
@@ -93,11 +93,9 @@ def train(config: dict):
     num_obs = env.observation_space.shape[0]
     num_act = env.action_space.n
 
-    q_function = NNQFunction(
-        obs_dim=num_obs, act_dim=num_act, feature_fn=IdentityFeature()
-    ).to(device)
+    q_function = NNQFunction(obs_dim=num_obs, act_dim=num_act, feature_fn=IdentityFeature()).to(device)
     policy = CategoricalMLP(num_obs, num_act).to(device)
-    # policy = QREPSPolicy(q_function, temp=config.eta)
+    # policy = QREPSPolicy(q_function, temp=config.eta)
     writer = SummaryWriter()
 
     agent = QREPS(
@@ -106,15 +104,15 @@ def train(config: dict):
         q_function=q_function,
         learner=torch.optim.Adam,
         sampler=BestResponseSampler,
-        optimize_policy=False,
+        optimize_policy=True,
         policy_lr=1e-3,
-        reward_transformer=lambda r: r / 2000,
+        reward_transformer=lambda r: r / 5,
         device = device,
         **vars(config))
 
-    trainer = Trainer()
+    trainer = Trainer(config.seed)
     trainer.setup(agent, env)
-    trainer.train(num_iterations=10000, max_steps=200, number_rollouts=10)
+    trainer.train(num_iterations=30, max_steps=500, number_rollouts=5)
     env.close()
     writer.close()
 

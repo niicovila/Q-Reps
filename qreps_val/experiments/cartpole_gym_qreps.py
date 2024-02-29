@@ -13,7 +13,6 @@ import ray.tune as tune
 import torch
 from bsuite.utils import gym_wrapper
 from torch.utils.tensorboard import SummaryWriter
-from qreps.algorithms.sampler import BestResponseSampler
 
 from qreps.algorithms import QREPS
 from qreps.feature_functions import IdentityFeature
@@ -30,8 +29,8 @@ logging.basicConfig(level=logging.INFO, format=FORMAT)
 SEED_OFFSET = 0
 
 config = {
-    "eta": 4.8,
-    "beta": 2e-2,
+    "eta": 0.002,
+    "beta": 5e-2,
     "saddle_point_steps": 300,
     "policy_opt_steps": 300,
     "discount": 0.99,
@@ -58,7 +57,6 @@ def train(config: dict):
         policy=policy,
         q_function=q_function,
         learner=torch.optim.Adam,
-        sampler=BestResponseSampler,
         optimize_policy=True,
         reward_transformer=lambda r: r / 2500,
         **config,

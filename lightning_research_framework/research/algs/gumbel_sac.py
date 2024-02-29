@@ -2,6 +2,9 @@ import torch
 import numpy as np
 import itertools
 
+import wandb
+from torch.utils.tensorboard import SummaryWriter
+
 from .base import Algorithm
 from research.networks.base import ActorCriticValuePolicy
 from research.utils import utils
@@ -92,6 +95,17 @@ class GumbelSAC(Algorithm):
         # Save values needed for optim setup.
         self.init_temperature = init_temperature
         self._alpha = alpha
+        # Initialize wandb
+        run_name = f'xsac_{beta}'
+        wandb.init(
+            project='XSAC_ORIGINAL',
+            entity=None,
+            sync_tensorboard=True,
+            name=run_name,
+            monitor_gym=True,
+            save_code=True,
+        )
+        self.writer = SummaryWriter(f"runs/{run_name}")
         super().__init__(env, network_class, dataset_class, **kwargs)
         assert isinstance(self.network, ActorCriticValuePolicy)
 

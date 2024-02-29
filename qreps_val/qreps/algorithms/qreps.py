@@ -44,7 +44,6 @@ class QREPS(AbstractAlgorithm):
     def calc_weights(
         self, features: Tensor, features_next: Tensor, rewards: Tensor, actions: Tensor
     ) -> Tensor:
-
         # Clamping added for stability. Could potentially blow up the policy otherwise
         return torch.clamp(self.alpha * self.q_function(features, actions), -50, 50)
 
