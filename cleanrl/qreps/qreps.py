@@ -42,17 +42,17 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-2
+    learning_rate: float = 2.5e-3
     """the learning rate of the optimizer"""
-    num_envs: int = 5
+    num_envs: int = 1
     """the number of parallel game environments"""
-    num_steps: int = 200
+    num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.99
     """the discount factor gamma"""
-    num_minibatches: int = 1
+    num_minibatches: int = 4
     """the number of mini-batches"""
     update_epochs: int = 300
     """the K epochs to update the policy"""
@@ -62,10 +62,11 @@ class Args:
     """the frequency of updating the policy"""
     alpha: float = 0.002 #0.02 was current best
     """the entropy regularization coefficient"""
-    eta: float = 0
+    eta: float = 0.0
     """the entropy regularization coefficient"""
     parametrized: bool = False
     """if toggled, the policy will be parametrized"""
+    saddle: bool = False
 
     # to be filled in runtime
     batch_size: int = 0
@@ -194,7 +195,29 @@ def empirical_logistic_bellman(pred, label, eta, values, discount):
 
 def S(pred, label, sampler, values, eta, discount):
     z = label - pred
-    return (sampler.probs() * z).sum() - (sampler.entropy() + np.log((sampler.n)))/eta +  (1-discount) * values.mean()
+    return (sampler.probs().detach() * z).sum() - (sampler.entropy().detach() + np.log((sampler.n)))/eta +  (1-discount) * values.mean()
+
+def optimize_loss(loss_fn, optimizer: torch.optim.Optimizer, optimizer_steps=300):
+        (
+            observations,
+            actions,
+            rewards,
+            next_observations,
+        ) = self.buffer.get_all()
+    
+
+        # This is implemented using a closure mainly due to the potential usage of BFGS
+        # BFGS needs to evaluate the function multiple times and therefore needs a defined closure
+        # All other optimizers handle the closure just fine as well, but only execute it once
+        
+        def closure():
+            optimizer.zero_grad()
+            loss = loss_fn(observations, next_observations, rewards, actions)
+            loss.backward()
+            return loss
+
+        for i in range(optimizer_steps):
+            optimizer.step(closure)
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -338,14 +361,16 @@ if __name__ == "__main__":
                     newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
                     new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
 
-                    # loss = S(new_q_a_value, b_returns[mb_inds], sampler, newvalue, args.eta, args.gamma)
-                    loss = empirical_logistic_bellman(new_q_a_value, b_returns[mb_inds], args.eta, newvalue, args.gamma)
+                    if args.saddle: 
+                        loss = S(new_q_a_value, b_returns[mb_inds], sampler, newvalue, args.eta, args.gamma)
+                        sampler.update(new_q_a_value.detach(), b_returns[mb_inds])
+                    else: loss = empirical_logistic_bellman(new_q_a_value, b_returns[mb_inds], args.eta, newvalue, args.gamma)
                     
                     critic_optimizer.zero_grad()
                     loss.backward()
                     critic_optimizer.step()
 
-                    sampler.update(new_q_a_value.detach(), b_returns[mb_inds])
+                    
 
 
                 
