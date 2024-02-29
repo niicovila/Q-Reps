@@ -60,11 +60,11 @@ class Args:
     """the maximum norm for the gradient clipping"""
     policy_freq: int = 1
     """the frequency of updating the policy"""
-    alpha: float = 100 #0.02 was current best
+    alpha: float = 0.002 #0.02 was current best
     """the entropy regularization coefficient"""
     eta: float = 0
     """the entropy regularization coefficient"""
-    parametrized: bool = True
+    parametrized: bool = False
     """if toggled, the policy will be parametrized"""
 
     # to be filled in runtime
@@ -164,9 +164,9 @@ class Sampler:
         probs = torch.clamp(probs, min=1e-8, max=1.0)
         self.prob_dist = Categorical(probs=probs)
 
-def empirical_logistic_bellman(eta, td, values, discount):
-    z = eta * td
-    return torch.log(torch.exp(z).mean())/eta + torch.mean((1 - discount) * values, 0)
+def empirical_logistic_bellman(pred, label, eta, values, discount):
+    z = eta * (label - pred)
+    return torch.log(torch.exp(z).mean()) / eta + torch.mean((1 - discount) * values, 0)
 
 def S(pred, label, sampler, values, eta, discount):
     z = label - pred
@@ -314,13 +314,14 @@ if __name__ == "__main__":
                     newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
                     new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
 
-                    loss = S(new_q_a_value, b_returns[mb_inds], sampler, newvalue, args.eta, args.gamma)
+                    # loss = S(new_q_a_value, b_returns[mb_inds], sampler, newvalue, args.eta, args.gamma)
+                    loss = empirical_logistic_bellman(new_q_a_value, b_returns[mb_inds], args.eta, newvalue, args.gamma)
                     
                     critic_optimizer.zero_grad()
                     loss.backward()
                     critic_optimizer.step()
 
-                    sampler.update(args.eta, new_q_a_value.detach(), b_returns[mb_inds])
+                    # sampler.update(args.eta, new_q_a_value.detach(), b_returns[mb_inds])
 
 
                 

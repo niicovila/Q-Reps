@@ -34,9 +34,9 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "CartPole-v1"
+    env_id: str = "LunarLander-v2"
     """the id of the environment"""
-    total_timesteps: int = 500000
+    total_timesteps: int = 1000000
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
