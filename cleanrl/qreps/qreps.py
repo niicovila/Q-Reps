@@ -145,24 +145,48 @@ class Agent(nn.Module):
             return action, policy_dist.log_prob(action), log_probs, action_probs
 
 class Sampler:
-    def __init__(self, N, device, beta=0.01):
+    """
+    Exponentiated  Sampler that directly gives a distribution according to the bellman errors.
+    Useful for problems where the exploration space is huge.
+    """
+    def __init__(self, N, device, eta, beta=0.01):
         self.n = N
+        self.eta = eta
         self.beta_hat = beta
-        self.prob_dist = Categorical( probs=torch.ones(N) / N)
+        self.prob_dist = torch.softmax(torch.ones((self.n,)), 0)
         self.device = device
 
     def probs(self):
-        return self.prob_dist.probs.to(self.device)
+        return Categorical(self.dist).to(self.device)
     
-    def entropy(self):
-        return self.prob_dist.entropy().to(self.device)
-    
-    def update(self, eta, pred, label):
+    def update(self, pred, label):
         log_probs = torch.log(self.probs())
-        h = (label - pred) - torch.log(self.n * self.probs())/eta
-        probs = F.softmax(self.beta_hat*h + log_probs, dim=0)
-        probs = torch.clamp(probs, min=1e-8, max=1.0)
+        delta = (label - pred) - torch.log(self.n * self.probs())/self.eta
+        probs = torch.clamp(torch.exp(self.beta_hat*delta + log_probs), -50, 50)
+        probs = torch.clamp(probs / torch.sum(probs), min=1e-8, max=1.0)
         self.prob_dist = Categorical(probs=probs)
+
+
+class BestResponseSampler:
+    """
+    Best Response Sampler that directly gives a distribution according to the bellman errors.
+    Useful for problems where the exploration space is huge.
+
+    Used in Logistic Q-Learning for CartPole.
+    """
+
+    def __init__(self, length, eta):
+        self.length = length
+        self.eta = eta
+        self.dist = torch.softmax(torch.ones((self.length,)), 0)
+
+    def get_next_distribution(self, bellman):
+        self.dist = torch.clip(torch.exp(self.eta * bellman), -20, 20)
+        self.dist = self.dist / torch.sum(self.dist)
+        return Categorical(self.dist)
+
+    def get_distribution(self):
+        return Categorical(self.dist)
 
 def empirical_logistic_bellman(pred, label, eta, values, discount):
     z = eta * (label - pred)
@@ -217,7 +241,7 @@ if __name__ == "__main__":
     alpha = torch.Tensor([args.alpha]).to(device)
     if args.eta == 0: args.eta = args.alpha
     eta = torch.Tensor([args.eta]).to(device)
-    sampler = Sampler(args.minibatch_size, device, beta=0.001)
+    sampler = Sampler(args.minibatch_size, device, eta=eta,  beta=0.001)
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -321,7 +345,7 @@ if __name__ == "__main__":
                     loss.backward()
                     critic_optimizer.step()
 
-                    # sampler.update(args.eta, new_q_a_value.detach(), b_returns[mb_inds])
+                    sampler.update(new_q_a_value.detach(), b_returns[mb_inds])
 
 
                 
