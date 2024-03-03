@@ -15,12 +15,11 @@ def empirical_bellman_error(
 ):
     v_features = v_func(features_next)
     q_features = q_func(features, actions)
-    return rewards + discount * v_features - q_features
+    output = rewards + discount * v_features - q_features
+    return output
 
 
-def empirical_logistic_bellman(
-    eta, features, features_next, actions, rewards, q_func, v_func, discount
-):
+def empirical_logistic_bellman(eta, features, features_next, actions, rewards, q_func, v_func, discount):
     errors = 1 / eta * torch.logsumexp(
         eta
         * empirical_bellman_error(

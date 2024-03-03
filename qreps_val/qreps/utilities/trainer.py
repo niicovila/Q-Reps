@@ -62,3 +62,4 @@ class Trainer:
 
             self.algo.update_policy(self.iter)
             self.iter += 1
+        return reward

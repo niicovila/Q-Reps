@@ -149,7 +149,7 @@ class AbstractAlgorithm(nn.Module, metaclass=ABCMeta):
         observations = observations.to(self.device)
         actions = actions.to(self.device)
         rewards = rewards.to(self.device)   
-        next_observations = next_observations.to(self.device)   
+        next_observations = next_observations.to(self.device)
 
         rewards = self.get_rewards(rewards)
 

@@ -40,7 +40,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 500000
+    total_timesteps: int = 100
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-3
     """the learning rate of the optimizer"""
@@ -60,13 +60,14 @@ class Args:
     """the maximum norm for the gradient clipping"""
     policy_freq: int = 1
     """the frequency of updating the policy"""
-    alpha: float = 0.002 #0.02 was current best
+    alpha: float = 0.3 #0.02 was current best
     """the entropy regularization coefficient"""
     eta: float = 0.0
     """the entropy regularization coefficient"""
-    parametrized: bool = False
+    parametrized: bool = True
     """if toggled, the policy will be parametrized"""
     saddle: bool = False
+    """if toggled, will use saddle point optimization"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -88,12 +89,46 @@ def make_env(env_id, idx, capture_video, run_name):
 
     return thunk
 
-
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
+def optimize_loss(self, loss_fn, optimizer: torch.optim.Optimizer, optimizer_steps=300):
+    """
+    Optimize the specified loss using batch gradient descent.
+
+    Allows to specify an optimizer and is compatible with L-BFGS, Adam and SGD.
+
+    @param loss_fn: the loss function which should be minimized.
+    @param optimizer: the torch optimizer to use
+    @param optimizer_steps: how many steps to do the optimization
+    """
+    (
+        observations,
+        actions,
+        rewards,
+        next_observations,
+    ) = self.buffer.get_all()
+    
+    observations = observations.to(self.device)
+    actions = actions.to(self.device)
+    rewards = rewards.to(self.device)   
+    next_observations = next_observations.to(self.device)   
+
+    rewards = self.get_rewards(rewards)
+
+    # This is implemented using a closure mainly due to the potential usage of BFGS
+    # BFGS needs to evaluate the function multiple times and therefore needs a defined closure
+    # All other optimizers handle the closure just fine as well, but only execute it once
+    def closure():
+        optimizer.zero_grad()
+        loss = loss_fn(observations, next_observations, rewards, actions)
+        loss.backward()
+        return loss
+
+    for i in range(optimizer_steps):
+        optimizer.step(closure)
 
 class Agent(nn.Module):
     def __init__(self, envs, args):
@@ -146,26 +181,28 @@ class Agent(nn.Module):
             return action, policy_dist.log_prob(action), log_probs, action_probs
 
 class Sampler:
-    """
-    Exponentiated  Sampler that directly gives a distribution according to the bellman errors.
-    Useful for problems where the exploration space is huge.
-    """
-    def __init__(self, N, device, eta, beta=0.01):
+    def __init__(self, N, device, eta, beta=0.0001):
         self.n = N
         self.eta = eta
-        self.beta_hat = beta
-        self.prob_dist = torch.softmax(torch.ones((self.n,)), 0)
+        self.beta = beta
+
+        self.h = torch.ones((self.n,))
+        self.z = torch.ones((self.n,))
+
+        self.prob_dist = Categorical(torch.softmax(torch.ones((self.n,)), 0))
         self.device = device
 
     def probs(self):
         return Categorical(self.dist).to(self.device)
     
+    def entropy(self):
+        return self.prob_dist.entropy().to(self.device)
+    
     def update(self, pred, label):
-        log_probs = torch.log(self.probs())
-        delta = (label - pred) - torch.log(self.n * self.probs())/self.eta
-        probs = torch.clamp(torch.exp(self.beta_hat*delta + log_probs), -50, 50)
-        probs = torch.clamp(probs / torch.sum(probs), min=1e-8, max=1.0)
-        self.prob_dist = Categorical(probs=probs)
+        self.z = self.probs() * torch.clamp(torch.exp(self.beta*self.h), -50, 50)
+        self.z = torch.clamp(self.z / (torch.sum(self.z)), min=1e-8, max=1.0)
+        self.h = (label - pred) - torch.log(self.n * self.probs()) / self.eta
+        self.prob_dist = Categorical(probs=self.z)
 
 
 class BestResponseSampler:
@@ -194,36 +231,20 @@ def empirical_logistic_bellman(pred, label, eta, values, discount):
     return torch.log(torch.exp(z).mean()) / eta + torch.mean((1 - discount) * values, 0)
 
 def S(pred, label, sampler, values, eta, discount):
-    z = label - pred
-    return (sampler.probs().detach() * z).sum() - (sampler.entropy().detach() + np.log((sampler.n)))/eta +  (1-discount) * values.mean()
+    bellman = label - pred
+    return torch.sum(sampler.probs().detach() * (bellman - torch.log((sampler.n * sampler.probs().detach()))/eta) +  (1-discount) * values)
 
-def optimize_loss(loss_fn, optimizer: torch.optim.Optimizer, optimizer_steps=300):
-        (
-            observations,
-            actions,
-            rewards,
-            next_observations,
-        ) = self.buffer.get_all()
+def nll_loss(self, observations, next_observations, rewards, actions):
+    weights = self.calc_weights(observations, next_observations, rewards, actions)
+    log_likes = self.policy.log_likelihood(observations, actions)
+    nll = -torch.mean(torch.exp(weights.detach()) * log_likes)
+    return nll
     
-
-        # This is implemented using a closure mainly due to the potential usage of BFGS
-        # BFGS needs to evaluate the function multiple times and therefore needs a defined closure
-        # All other optimizers handle the closure just fine as well, but only execute it once
-        
-        def closure():
-            optimizer.zero_grad()
-            loss = loss_fn(observations, next_observations, rewards, actions)
-            loss.backward()
-            return loss
-
-        for i in range(optimizer_steps):
-            optimizer.step(closure)
-
 if __name__ == "__main__":
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
-    args.num_iterations = args.total_timesteps // args.batch_size
+    args.num_iterations = args.total_timesteps # // args.batch_size
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     if args.track:
         import wandb
@@ -264,7 +285,7 @@ if __name__ == "__main__":
     alpha = torch.Tensor([args.alpha]).to(device)
     if args.eta == 0: args.eta = args.alpha
     eta = torch.Tensor([args.eta]).to(device)
-    sampler = Sampler(args.minibatch_size, device, eta=eta,  beta=0.001)
+    sampler = Sampler(args.minibatch_size, device, eta=eta, beta=0.01)
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -361,7 +382,7 @@ if __name__ == "__main__":
                     newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
                     new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
 
-                    if args.saddle: 
+                    if args.saddle:
                         loss = S(new_q_a_value, b_returns[mb_inds], sampler, newvalue, args.eta, args.gamma)
                         sampler.update(new_q_a_value.detach(), b_returns[mb_inds])
                     else: loss = empirical_logistic_bellman(new_q_a_value, b_returns[mb_inds], args.eta, newvalue, args.gamma)
@@ -370,10 +391,6 @@ if __name__ == "__main__":
                     loss.backward()
                     critic_optimizer.step()
 
-                    
-
-
-                
             weights_after_each_epoch.append(deepcopy(agent.critic.state_dict()))
 
         avg_weights = {}
@@ -393,7 +410,6 @@ if __name__ == "__main__":
 
                         _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs[mb_inds])  
                         actor_loss = -torch.mean(torch.exp(weights)*newlogprobs)
-                        #actor_loss = (action_probs * (newlogprobs / alpha - newqvalue)).mean()
                 
                         actor_optimizer.zero_grad()
                         actor_loss.backward()
