@@ -6,11 +6,11 @@ In main, you will find the three main algorithms I'm currently working on.
 ### Provisional Results:
 
 #### XPPO
-![Reference Image](../../dev/assets/img/xppo.png)
+![Reference Image](dev/assets/img/xppo.png)
 
 #### XSAC
-![Reference Image](../../dev/assets/img/exact_xsac.png)
+![Reference Image](dev/assets/img/exact_xsac.png)
 
 #### XTD3
-![Reference Image](../../dev/assets/img/exact_xtd3.png)
+![Reference Image](dev/assets/img/exact_xtd3.png)
 
