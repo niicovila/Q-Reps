@@ -7,8 +7,8 @@ class Sampler:
         self.eta = eta
         self.beta = beta
 
-        self.h = torch.ones((self.n,))
-        self.z = torch.ones((self.n,))
+        self.h = torch.rand(self.n) * 0.1
+        self.z = torch.rand(self.n) * 0.1
 
         self.prob_dist = Categorical(torch.softmax(torch.ones((self.n,)), 0))
         self.device = device
@@ -20,7 +20,15 @@ class Sampler:
         return self.prob_dist.entropy().to(self.device)
     
     def update(self, pred, label):
-        self.z = self.probs() * torch.exp(self.beta*self.h)
-        self.z = torch.clamp(self.z / (torch.sum(self.z)), min=1e-8, max=1.0)
-        self.h = (label - pred) - torch.log(self.n * self.probs()) / self.eta
+        # Calculate z with numerical stability
+        
+        self.z = self.probs() * torch.exp(self.beta * self.h ) # - torch.max(self.beta * self.h)
+        self.z = self.z / (torch.sum(self.z) + 1e-8)
+        
+        # Update h
+        bellman = torch.clamp(label - pred, -20, 20)
+        self.h = bellman - torch.log(self.n * self.probs() + 1e-8) / self.eta
+        # print(label)
+        
+        # Update the probability distribution
         self.prob_dist = Categorical(probs=self.z)

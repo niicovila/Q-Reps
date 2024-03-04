@@ -25,9 +25,19 @@ def optimize_loss(buffer, loss_fn, optimizer: torch.optim.Optimizer, args, agent
     for i in range(optimizer_steps):
         optimizer.step(closure)
 
-def empirical_logistic_bellman(pred, label, eta, values, discount):
+def empirical_logistic_bellman(pred, label, eta, values, discount,clip=10):
     z = eta * (label - pred)
-    return torch.log(torch.exp(z).mean()) / eta + torch.mean((1 - discount) * values, 0)
+    if clip is not None:
+        z = torch.clamp(z, -clip, clip)
+    return torch.log(torch.exp(z).mean()) + torch.mean((1 - discount) * values, 0) - torch.log((z + 1).mean())
+
+def empirical_logistic_bellman(pred, label, eta, values, discount):
+    assert pred.shape == label.shape, "Shapes were incorrect"
+    z = (label - pred) * eta
+    loss = torch.exp(z)
+    loss_2 =  z + 1
+    loss = loss.mean() - loss_2.mean()
+    return torch.log(loss) + torch.mean((1 - discount) * values, 0)
 
 def S(pred, label, sampler, values, eta, discount):
     bellman = label - pred

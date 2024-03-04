@@ -1,4 +1,5 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppopy
+from copy import deepcopy
 import os
 import random
 import time
@@ -39,7 +40,7 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 100
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-3
+    learning_rate: float = 2.5e-4
     """the learning rate of the critic"""
     policy_lr: float = 1e-3
     """the learning rate of the actor"""
@@ -47,21 +48,23 @@ class Args:
     """the number of parallel game environments"""
     num_steps: int = 500
     """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = True
+    anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 0.99
+    gamma: float = 1.0
     """the discount factor gamma"""
-    num_minibatches: int = 1
+    num_minibatches: int = 4
     """the number of mini-batches"""
-    update_epochs: int = 100
+    update_epochs: int = 300
     """the K epochs to update the policy"""
-    alpha: float = 0.02 #0.02 was current best
+    update_policy_epochs: int = 300
+    """the K epochs to update the policy"""
+    alpha: float = 0.0 #0.02 was current best
     """the entropy regularization coefficient"""
     eta: float = 0
     """the entropy regularization coefficient"""
     parametrized: bool = True
     """if toggled, the policy will be parametrized"""
-    saddle: bool = True
+    saddle: bool = False
     """if toggled, will use saddle point optimization"""
 
     # to be filled in runtime
@@ -159,7 +162,7 @@ if __name__ == "__main__":
             reward = torch.tensor(reward).to(device).view(-1)
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device)
 
-            update(buffer, obs, next_obs, action, reward, next_done) # Try also with dones instead of next_done
+            update(buffer, obs, next_obs, action, reward, next_done)
 
             if "final_info" in infos:
                 for info in infos["final_info"]:
@@ -169,14 +172,63 @@ if __name__ == "__main__":
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
 
         # Optimize critic
-        if args.saddle:
-            optimize_loss(buffer=buffer, loss_fn=S, optimizer=critic_optimizer, agent=agent, args=args, optimizer_steps=args.update_epochs, sampler=sampler)
-        else: 
-            optimize_loss(buffer=buffer, loss_fn=empirical_logistic_bellman, optimizer=critic_optimizer, agent=agent, args=args, optimizer_steps=args.update_epochs)
-        
-        # Optimize actor
-        if args.parametrized: optimize_loss(buffer=buffer, loss_fn=nll_loss, optimizer=critic_optimizer, agent=agent, args=args, optimizer_steps=args.update_epochs)
-        
+        (   _observations,
+            _actions,
+            _rewards,
+            _next_observations,
+            _next_done,
+        ) = buffer.get_all()
+
+        with torch.no_grad():
+            b_returns = _rewards + args.gamma * agent.get_value(_next_observations)[1] * (1 - _next_done)
+
+        b_inds = np.arange(args.batch_size)
+        clipfracs = []
+        weights_after_each_epoch = []
+        for epoch in range(args.update_epochs):
+            np.random.shuffle(b_inds)
+            for start in range(0, args.batch_size, args.minibatch_size):
+                    end = start + args.minibatch_size
+                    mb_inds = b_inds[start:end]
+
+                    newqvalue, newvalue = agent.get_value(_observations[mb_inds])
+                    new_q_a_value = newqvalue.gather(1, _actions.long()[mb_inds].unsqueeze(-1)).squeeze(-1)
+                    
+                    if args.saddle:
+                        loss = S(new_q_a_value, b_returns[mb_inds], sampler, newvalue, args.eta, args.gamma)
+                        sampler.update(new_q_a_value.detach(), b_returns[mb_inds])
+                    else: loss = empirical_logistic_bellman(new_q_a_value, b_returns[mb_inds], args.eta, newvalue, args.gamma)
+                    
+                    critic_optimizer.zero_grad()
+                    loss.backward()
+                    # print(loss.item())
+                    critic_optimizer.step()
+
+            weights_after_each_epoch.append(deepcopy(agent.critic.state_dict()))
+
+        avg_weights = {}
+        for key in weights_after_each_epoch[0].keys():
+            avg_weights[key] = sum(T[key] for T in weights_after_each_epoch) / len(weights_after_each_epoch)
+        agent.critic.load_state_dict(avg_weights)
+
+        if args.parametrized:
+            for epoch in range(args.update_policy_epochs):
+                np.random.shuffle(b_inds)
+                for start in range(0, args.batch_size, args.minibatch_size):
+                        end = start + args.minibatch_size
+                        mb_inds = b_inds[start:end]
+                        with torch.no_grad():
+                            newqvalue, newvalue = agent.get_value(_observations[mb_inds])
+                            new_q_a_value = newqvalue.gather(1, _actions.long()[mb_inds].unsqueeze(1)).view(-1)
+                            weights = args.alpha * (new_q_a_value)
+
+                        _, newlogprob, newlogprobs, action_probs = agent.get_action(_observations[mb_inds])  
+                        actor_loss = -torch.mean(torch.exp(weights)*newlogprob)
+
+                        actor_optimizer.zero_grad()
+                        actor_loss.backward()
+                        actor_optimizer.step()
+
         buffer.reset()
 
         writer.add_scalar("losses/actor_loss", actor_loss, global_step)
