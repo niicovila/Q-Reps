@@ -8,5 +8,5 @@
 
 ### XPPO:
 
-![Reference Image](dev/assets/xppo.png)
+![Reference Image](../../dev/assets/img/xppo.png)
 
