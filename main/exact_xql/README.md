@@ -8,10 +8,10 @@
 
 ### XSAC:
 
-![Reference Image](dev/assets/exact_xsac.png)
+![Reference Image](../../dev/assets/exact_xsac.png)
 
 
 ### XSAC:
 
-![Reference Image](dev/assets/exact_xtd3.png)
+![Reference Image](../../dev/assets/exact_xtd3.png)
 
