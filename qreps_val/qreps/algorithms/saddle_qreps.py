@@ -48,7 +48,7 @@ class SaddleQREPS(AbstractAlgorithm):
         q_function: SimpleQFunction,
         saddle_point_steps: int = 300,
         beta: float = 0.1,
-        eta: float = 0.5,
+        eta: float = 0.01,
         alpha: float = None,
         learner: Type[torch.optim.Optimizer] = torch.optim.SGD,
         sampler: Type[AbstractSampler] = ExponentiatedGradientSampler,
@@ -129,11 +129,10 @@ class SaddleQREPS(AbstractAlgorithm):
 
     def update_policy(self, iteration):
         (
-            next_observations,
+            observations,
             actions,
             rewards,
-            discounts,
-            observations,
+            next_observations,
         ) = self.buffer.get_all()
 
         rewards = self.get_rewards(rewards)
@@ -149,17 +148,13 @@ class SaddleQREPS(AbstractAlgorithm):
             self.optimize_loss(
                 self.nll_loss, self.pol_optimizer, optimizer_steps=self.policy_opt_steps
             )
-
         self.buffer.reset()
-
         dist_after = self.policy.distribution(observations)
         self.report_tensorboard(
             observations,
             next_observations,
             rewards,
             actions,
-            dist_before,
-            dist_after,
             iteration,
         )
         if self.writer is not None:

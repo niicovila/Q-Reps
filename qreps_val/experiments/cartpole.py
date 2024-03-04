@@ -50,10 +50,10 @@ logging.basicConfig(level=logging.INFO, format=FORMAT)
 SEED_OFFSET = 0
 
 qreps_config = {
-    "env_id": "CartPole-v1",
+    "env_id": "LunarLander-v2",
     "track": False,
-    "eta": 0.204177551020,
-    "beta": 0.001,
+    "eta": 0.05,
+    "beta": 2.5e-4,
     "saddle_point_steps": 300,
     "policy_opt_steps": 300,
     "discount": 0.99,
@@ -65,7 +65,7 @@ qreps_config = {
     "capture_video": False,
 }
  
-## seed 4: "eta": 0.204177551020,  "beta": 0.001
+## seed 4: "eta": 0.204177551020,  "beta": 0.001 QREPS
 
 
 def train(config: dict):
@@ -101,46 +101,49 @@ def train(config: dict):
     # policy = QREPSPolicy(q_function, temp=config.eta)
     writer = SummaryWriter()
 
-    agent = QREPS(
+    agent = SaddleQREPS(
         writer=writer,
         policy=policy,
         q_function=q_function,
         learner=torch.optim.Adam,
         optimize_policy=True,
         policy_lr=1e-2,
+        sampler=ExponentiatedGradientSampler,
         reward_transformer=lambda r: r / 5,
         device = device,
         **vars(config))
 
     trainer = Trainer(config.seed)
     trainer.setup(agent, env)
-    reward = trainer.train(num_iterations=100, max_steps=500, number_rollouts=5)
+    reward = trainer.train(num_iterations=30, max_steps=500, number_rollouts=5)
     env.close()
     writer.close()
     return reward
 
-train(qreps_config)
+# train(qreps_config)
 
-# alphas = np.linspace(0.0001, 5, num=50)
-# learning_rates = [0.1, 1e-2, 1e-3, 1e-4]
+alphas = np.linspace(0.0001, 5, num=100)
+learning_rates = [0.1, 1e-2, 1e-3, 1e-4]
 
-# results = []
+results = []
 
-# for alpha, learning_rate in itertools.product(alphas, learning_rates):
-#     qreps_config["eta"] = alpha
-#     qreps_config["beta"] = learning_rate
-    
-#     print(f"Training with alpha: {alpha}, learning_rate: {learning_rate}")
-#     reward = train(qreps_config)
+for alpha, learning_rate in itertools.product(alphas, learning_rates):
+    qreps_config["eta"] = alpha
+    qreps_config["beta"] = learning_rate
+    try: 
+        print(f"Training with alpha: {alpha}, learning_rate: {learning_rate}")
+        reward = train(qreps_config)
+        results.append((alpha, learning_rate, reward))
 
-#     results.append((alpha, learning_rate, reward))
+    except:
+        pass
 
-# best_combination = max(results, key=lambda x: x[2])
+best_combination = max(results, key=lambda x: x[2])
 
-# print("Best Combination:")
-# print("eta:", best_combination[0])
-# print("Learning Rate:", best_combination[1])
-# print("Metric Value:", best_combination[2])
+print("Best Combination:")
+print("eta:", best_combination[0])
+print("Learning Rate:", best_combination[1])
+print("Metric Value:", best_combination[2])
 
-# df = pd.DataFrame(results, columns=["Alpha", "Learning Rate", "Reward"])
-# df.to_csv("results.csv", index=False)
+df = pd.DataFrame(results, columns=["Alpha", "Learning Rate", "Reward"])
+df.to_csv("results_saddle.csv", index=False)

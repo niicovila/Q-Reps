@@ -12,7 +12,7 @@ class ExponentiatedGradientSampler(AbstractSampler):
         self.z /= torch.sum(self.z)
 
     def get_next_distribution(self, bellman_error):
-        self.z = self.z * torch.exp(self.beta * self.h)
+        self.z = self.z * torch.clamp(torch.exp(self.beta * self.h), -50, 50)
         self.z = self.z / (torch.sum(self.z))
         self.h = bellman_error - torch.log(self.length * self.z) / self.eta
 

@@ -15,7 +15,7 @@ import tyro
 from torch.distributions.categorical import Categorical
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
-
+from sampler import Sampler
 ## Try adding the replay buffer // checking if the data storage of the transition data is done right
 
 @dataclass
@@ -44,30 +44,35 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-3
     """the learning rate of the optimizer"""
-    num_envs: int = 1
+    policy_lr: float = 1e-2
+    num_envs: int = 5
     """the number of parallel game environments"""
-    num_steps: int = 128
+    num_steps: int = 200
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 0.99
+    gamma: float = 1.0
     """the discount factor gamma"""
     num_minibatches: int = 4
     """the number of mini-batches"""
     update_epochs: int = 300
     """the K epochs to update the policy"""
+    update_policy_epochs: int = 10
+    """the K epochs to update the policy"""
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
     policy_freq: int = 1
     """the frequency of updating the policy"""
-    alpha: float = 0.3 #0.02 was current best
+    alpha: float = 0.5 #0.02 was current best
     """the entropy regularization coefficient"""
     eta: float = 0.0
     """the entropy regularization coefficient"""
     parametrized: bool = True
     """if toggled, the policy will be parametrized"""
-    saddle: bool = False
+    saddle: bool = True
     """if toggled, will use saddle point optimization"""
+    anneal_alpha: bool = True
+    """if toggled, will anneal the alpha"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -94,60 +99,24 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
-def optimize_loss(self, loss_fn, optimizer: torch.optim.Optimizer, optimizer_steps=300):
-    """
-    Optimize the specified loss using batch gradient descent.
-
-    Allows to specify an optimizer and is compatible with L-BFGS, Adam and SGD.
-
-    @param loss_fn: the loss function which should be minimized.
-    @param optimizer: the torch optimizer to use
-    @param optimizer_steps: how many steps to do the optimization
-    """
-    (
-        observations,
-        actions,
-        rewards,
-        next_observations,
-    ) = self.buffer.get_all()
-    
-    observations = observations.to(self.device)
-    actions = actions.to(self.device)
-    rewards = rewards.to(self.device)   
-    next_observations = next_observations.to(self.device)   
-
-    rewards = self.get_rewards(rewards)
-
-    # This is implemented using a closure mainly due to the potential usage of BFGS
-    # BFGS needs to evaluate the function multiple times and therefore needs a defined closure
-    # All other optimizers handle the closure just fine as well, but only execute it once
-    def closure():
-        optimizer.zero_grad()
-        loss = loss_fn(observations, next_observations, rewards, actions)
-        loss.backward()
-        return loss
-
-    for i in range(optimizer_steps):
-        optimizer.step(closure)
-
 class Agent(nn.Module):
     def __init__(self, envs, args):
         super(Agent, self).__init__()
         self.alpha =args.alpha
         self.parametrized = args.parametrized
         self.critic = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, envs.single_action_space.n), std=1.0),
+            nn.Linear(np.array(envs.single_observation_space.shape).prod(), 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, envs.single_action_space.n),
         )
         self.actor = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, envs.single_action_space.n), std=0.01),
+            nn.Linear(np.array(envs.single_observation_space.shape).prod(), 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, envs.single_action_space.n),
         )
 
     def get_value(self, x):
@@ -162,6 +131,7 @@ class Agent(nn.Module):
             return q, v
 
     def get_action(self, x, action=None):
+
         if not self.parametrized:
             logits, v = self.get_value(x)
             policy_dist = Categorical(logits=logits)
@@ -169,8 +139,8 @@ class Agent(nn.Module):
             action_probs = policy_dist.probs
             if action is None:
                 action = policy_dist.sample()
-
             return action, policy_dist.log_prob(action), log_probs, action_probs
+        
         else:
             logits = self.actor(x)
             policy_dist = Categorical(logits=logits)
@@ -180,52 +150,6 @@ class Agent(nn.Module):
                 action = policy_dist.sample()
             return action, policy_dist.log_prob(action), log_probs, action_probs
 
-class Sampler:
-    def __init__(self, N, device, eta, beta=0.0001):
-        self.n = N
-        self.eta = eta
-        self.beta = beta
-
-        self.h = torch.ones((self.n,))
-        self.z = torch.ones((self.n,))
-
-        self.prob_dist = Categorical(torch.softmax(torch.ones((self.n,)), 0))
-        self.device = device
-
-    def probs(self):
-        return Categorical(self.dist).to(self.device)
-    
-    def entropy(self):
-        return self.prob_dist.entropy().to(self.device)
-    
-    def update(self, pred, label):
-        self.z = self.probs() * torch.clamp(torch.exp(self.beta*self.h), -50, 50)
-        self.z = torch.clamp(self.z / (torch.sum(self.z)), min=1e-8, max=1.0)
-        self.h = (label - pred) - torch.log(self.n * self.probs()) / self.eta
-        self.prob_dist = Categorical(probs=self.z)
-
-
-class BestResponseSampler:
-    """
-    Best Response Sampler that directly gives a distribution according to the bellman errors.
-    Useful for problems where the exploration space is huge.
-
-    Used in Logistic Q-Learning for CartPole.
-    """
-
-    def __init__(self, length, eta):
-        self.length = length
-        self.eta = eta
-        self.dist = torch.softmax(torch.ones((self.length,)), 0)
-
-    def get_next_distribution(self, bellman):
-        self.dist = torch.clip(torch.exp(self.eta * bellman), -20, 20)
-        self.dist = self.dist / torch.sum(self.dist)
-        return Categorical(self.dist)
-
-    def get_distribution(self):
-        return Categorical(self.dist)
-
 def empirical_logistic_bellman(pred, label, eta, values, discount):
     z = eta * (label - pred)
     return torch.log(torch.exp(z).mean()) / eta + torch.mean((1 - discount) * values, 0)
@@ -233,12 +157,6 @@ def empirical_logistic_bellman(pred, label, eta, values, discount):
 def S(pred, label, sampler, values, eta, discount):
     bellman = label - pred
     return torch.sum(sampler.probs().detach() * (bellman - torch.log((sampler.n * sampler.probs().detach()))/eta) +  (1-discount) * values)
-
-def nll_loss(self, observations, next_observations, rewards, actions):
-    weights = self.calc_weights(observations, next_observations, rewards, actions)
-    log_likes = self.policy.log_likelihood(observations, actions)
-    nll = -torch.mean(torch.exp(weights.detach()) * log_likes)
-    return nll
     
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -278,14 +196,13 @@ if __name__ == "__main__":
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-
     agent = Agent(envs, args).to(device)
-    critic_optimizer = optim.Adam(agent.critic.parameters(), lr=args.learning_rate, eps=1e-5)
-    actor_optimizer = optim.Adam(agent.actor.parameters(), lr=args.learning_rate, eps=1e-5)
+    critic_optimizer = optim.SGD(agent.critic.parameters(), lr=args.learning_rate)
+    actor_optimizer = optim.SGD(agent.actor.parameters(), lr=args.policy_lr)
     alpha = torch.Tensor([args.alpha]).to(device)
     if args.eta == 0: args.eta = args.alpha
     eta = torch.Tensor([args.eta]).to(device)
-    sampler = Sampler(args.minibatch_size, device, eta=eta, beta=0.01)
+    sampler = Sampler(args.minibatch_size, device, eta=eta, beta=0.1)
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -315,7 +232,11 @@ if __name__ == "__main__":
             lrnow = frac * args.learning_rate
             actor_optimizer.param_groups[0]["lr"] = lrnow
             critic_optimizer.param_groups[0]["lr"] = lrnow
-            # policy_optimizer.param_groups[0]["lr"] = lrnow
+
+        if args.anneal_alpha:
+            frac = (iteration - 1.0) / args.num_iterations
+            eta *= (1.0 + frac)
+            agent.alpha *= (1.0 + frac)
 
         for step in range(0, args.num_steps):
             global_step += args.num_envs
@@ -351,7 +272,6 @@ if __name__ == "__main__":
             q, next_value = agent.get_value(next_obs)
             next_value = next_value.reshape(1, -1)
             returns = torch.zeros_like(rewards).to(device)
-            lastgaelam = 0
             for t in reversed(range(args.num_steps)):
                 if t == args.num_steps - 1:
                     nextnonterminal = 1.0 - next_done
@@ -368,11 +288,11 @@ if __name__ == "__main__":
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
+        b_qs = qs.reshape((-1, envs.single_action_space.n))
 
         b_inds = np.arange(args.batch_size)
         clipfracs = []
         weights_after_each_epoch = []
-
         for epoch in range(args.update_epochs):
             np.random.shuffle(b_inds)
             for start in range(0, args.batch_size, args.minibatch_size):
@@ -381,7 +301,6 @@ if __name__ == "__main__":
 
                     newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
                     new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
-
                     if args.saddle:
                         loss = S(new_q_a_value, b_returns[mb_inds], sampler, newvalue, args.eta, args.gamma)
                         sampler.update(new_q_a_value.detach(), b_returns[mb_inds])
@@ -399,17 +318,18 @@ if __name__ == "__main__":
         agent.critic.load_state_dict(avg_weights)
 
         if args.parametrized:
-            for epoch in range(args.update_epochs):
+            for epoch in range(args.update_policy_epochs):
                 np.random.shuffle(b_inds)
                 for start in range(0, args.batch_size, args.minibatch_size):
                         end = start + args.minibatch_size
                         mb_inds = b_inds[start:end]
                         with torch.no_grad():
                             newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
-                            weights = torch.clamp(args.alpha * (newqvalue), -20, 20)
+                            new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
+                            weights = args.alpha * (new_q_a_value)
 
                         _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs[mb_inds])  
-                        actor_loss = -torch.mean(torch.exp(weights)*newlogprobs)
+                        actor_loss = -torch.mean(torch.exp(weights)*newlogprob)
                 
                         actor_optimizer.zero_grad()
                         actor_loss.backward()

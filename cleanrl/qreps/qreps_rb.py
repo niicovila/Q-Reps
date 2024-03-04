@@ -53,7 +53,7 @@ class Args:
     """the discount factor gamma"""
     num_minibatches: int = 1
     """the number of mini-batches"""
-    update_epochs: int = 4
+    update_epochs: int = 100
     """the K epochs to update the policy"""
     alpha: float = 0.02 #0.02 was current best
     """the entropy regularization coefficient"""

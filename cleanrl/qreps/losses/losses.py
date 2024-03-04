@@ -33,7 +33,6 @@ def S(pred, label, sampler, values, eta, discount):
     bellman = label - pred
     return torch.sum(sampler.probs().detach() * (bellman - torch.log((sampler.n * sampler.probs().detach()))/eta) +  (1-discount) * values)
 
-
 def nll_loss(observations, next_observations, rewards, actions, agent, args):
     newqvalue, newvalue = agent.get_value(observations)
     new_q_a_value = newqvalue.gather(1, actions.long().unsqueeze(-1)).squeeze(-1)
