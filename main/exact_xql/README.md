@@ -11,7 +11,7 @@
 ![Reference Image](../../dev/assets/img/exact_xsac.png)
 
 
-### XSAC:
+### XTD3:
 
 ![Reference Image](../../dev/assets/img/exact_xtd3.png)
 
