@@ -1,1 +1,1 @@
-from .sampler import Sampler
+from .sampler import ExponentiatedGradientSampler, BestResponseSampler
