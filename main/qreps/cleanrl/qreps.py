@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import tyro
-from losses import empirical_logistic_bellman, S
+from losses import empirical_logistic_bellman, S, log_gumbel, empirical_logistic_bellman_trick
 from agent import Agent
 
 from torch.distributions.categorical import Categorical
@@ -44,13 +44,13 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 30
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-3
+    learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    policy_lr: float = 1e-3
+    policy_lr: float = 1e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 4
+    num_envs: int = 1
     """the number of parallel game environments"""
-    num_steps: int = 128
+    num_steps: int = 500
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -58,13 +58,13 @@ class Args:
     """the discount factor gamma"""
     num_minibatches: int = 4
     """the number of mini-batches"""
-    update_epochs: int = 150
+    update_epochs: int = 300
     """the K epochs to update the policy"""
-    update_policy_epochs: int = 150
+    update_policy_epochs: int = 300
     """the K epochs to update the policy"""
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
-    alpha: float = 2.5 #0.02 was current best
+    alpha: float = 2 #0.02 was current best
     """the entropy regularization coefficient"""
     eta: float = 0.0
     """the entropy regularization coefficient"""
@@ -72,10 +72,14 @@ class Args:
     """if toggled, the policy will be parametrized"""
     saddle: bool = False
     """if toggled, will use saddle point optimization"""
-    nll_loss: bool = True
+    gumbel: bool = False
+    """if toggled, will use gumbel loss for critic optimization"""
+    nll_loss: bool = False
     """if toggled, will use nll for policy optimization"""
     sampler = BestResponseSampler
     """the sampler to use for the optimization -either ExponentiatedGradientSampler or BestResponseSampler-"""
+    average_critics: bool = True
+    """if toggled, will average the critics after each iteration"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -146,7 +150,6 @@ if __name__ == "__main__":
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
-    logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
@@ -180,7 +183,6 @@ if __name__ == "__main__":
                 values[step] = value.flatten()
 
             actions[step] = action
-            logprobs[step] = action_logprob
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
@@ -213,7 +215,6 @@ if __name__ == "__main__":
 
         # flatten the batch
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
-        b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
@@ -230,10 +231,10 @@ if __name__ == "__main__":
 
                     newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
                     new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(-1)).squeeze(-1)
-                    # print(b_returns[mb_inds].sum() - new_q_a_value.sum())
-                    if args.saddle:
-                        loss = S(new_q_a_value, b_returns[mb_inds], sampler, newvalue, args.eta, args.gamma)
-                    else: loss = empirical_logistic_bellman(new_q_a_value, b_returns[mb_inds], args.eta, newvalue, args.gamma)
+
+                    if args.saddle: loss = S(new_q_a_value, b_returns[mb_inds], sampler, newvalue, args.eta, args.gamma)
+                    elif args.gumbel: loss = log_gumbel(new_q_a_value, b_returns[mb_inds], args.eta, newvalue, args.gamma)
+                    else: loss = empirical_logistic_bellman_trick(new_q_a_value, b_returns[mb_inds], args.eta, newvalue, args.gamma)
                     
                     critic_optimizer.zero_grad()
                     loss.backward()
@@ -242,11 +243,12 @@ if __name__ == "__main__":
                     sampler.update(new_q_a_value.detach(), b_returns[mb_inds])
 
             weights_after_each_epoch.append(deepcopy(agent.critic.state_dict()))
-
-        avg_weights = {}
-        for key in weights_after_each_epoch[0].keys():
-            avg_weights[key] = sum(T[key] for T in weights_after_each_epoch) / len(weights_after_each_epoch)
-        agent.critic.load_state_dict(avg_weights)
+        
+        if args.average_critics:
+            avg_weights = {}
+            for key in weights_after_each_epoch[0].keys():
+                avg_weights[key] = sum(T[key] for T in weights_after_each_epoch) / len(weights_after_each_epoch)
+            agent.critic.load_state_dict(avg_weights)
 
         if args.parametrized:
             for epoch in range(args.update_policy_epochs):
@@ -257,7 +259,7 @@ if __name__ == "__main__":
                         with torch.no_grad():
                             newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
                             new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
-                            weights = new_q_a_value / alpha
+                            weights = torch.clamp(new_q_a_value / alpha, -50, 50)
 
                         _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs[mb_inds])
 
@@ -267,6 +269,7 @@ if __name__ == "__main__":
                         actor_optimizer.zero_grad()
                         actor_loss.backward()
                         actor_optimizer.step()
+
         sampler.reset()
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)

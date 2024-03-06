@@ -14,6 +14,7 @@ class Agent(nn.Module):
         super(Agent, self).__init__()
         self.alpha = args.alpha
         self.parametrized = args.parametrized
+
         self.critic = nn.Sequential(
             layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
             nn.Tanh(),

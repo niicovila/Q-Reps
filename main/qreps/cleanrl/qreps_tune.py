@@ -1,6 +1,5 @@
-# docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppopy
 import argparse
-import logging
+from copy import deepcopy
 import os
 import random
 import time
@@ -12,54 +11,55 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import tyro
-from ray import train
-from ray.tune.search import BasicVariantGenerator
+from losses import empirical_logistic_bellman, S, log_gumbel
+from agent import Agent
 
-from dataclasses import asdict
-
-
-from ray.tune.search import Repeater
-from ray.tune.search.hebo import HEBOSearch
 from torch.distributions.categorical import Categorical
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
+from sampler import ExponentiatedGradientSampler, BestResponseSampler
+from ray import train
+from ray.tune.search import Repeater
+from ray.tune.search.hebo import HEBOSearch
 import ray.tune as tune  # Import the missing package
 
 
-config = {
-    "exp_name" : "qreps",
-    "seed": 1,
-    "torch_deterministic": True,    
-    "cuda": True,
-    "track": False,
-    "wandb_project_name": "cleanRL",
-    "wandb_entity": None,
-    "capture_video": False,
-    "env_id": "CartPole-v1",
-    "total_timesteps": 100000,
-    "learning_rate": tune.grid_search([10, 20]),
-    "num_envs": tune.grid_search([10, 20]),
-    "num_steps": tune.grid_search([10, 20]),
-    "anneal_lr": True,
-    "gamma": 0.99,
-    "gae_lambda": 0.95,
-    "num_minibatches": tune.grid_search([10, 20]),
-    "update_epochs": tune.grid_search([10, 20]),
-    "norm_adv": True,
-    "clip_coef": 0.2,
-    "clip_vloss": True,
-    "ent_coef": 0.01,
-    "vf_coef": 0.5,
-    "max_grad_norm": 0.5,
-    "target_kl": None,
-    "policy_freq": tune.grid_search([10, 20]),
-    "alpha": tune.grid_search([10, 20]),
-    "batch_size": 0,
-    "minibatch_size": 0,
-}
-for handler in logging.root.handlers[:]:
-    logging.root.removeHandler(handler)
 
+config = {
+  "exp_name": "QREPS",
+  "seed": 0,
+  "torch_deterministic": True,
+  "cuda": True,
+  "track": False,
+  "wandb_project_name": "QREPS_cleanRL",
+  "wandb_entity": None,
+  "capture_video": False,
+  "env_id": "CartPole-v1",
+  "total_timesteps": 30,
+  "learning_rate": tune.loguniform(2e-4, 2e-1),
+  "policy_lr": tune.loguniform(2e-3, 2e-1),
+  "num_envs": 5,
+  "num_steps": 200,
+  "anneal_lr": True,
+  "gamma": 0.99,
+  "num_minibatches": 4,
+  "update_epochs": tune.choice([300, 450]),
+  "update_policy_epochs": tune.choice([300, 450]),
+  "max_grad_norm": 0.5,
+  "alpha": tune.loguniform(2e-1, 10),
+  "eta": 0.0,
+  "parametrized": True,
+  "saddle": False,
+  "gumbel": False,
+  "nll_loss": True,
+  "sampler": BestResponseSampler,
+  "average_critics": False,
+  "batch_size": 0,
+  "minibatch_size": 0,
+  "num_iterations": 0
+}
+
+import logging
 FORMAT = "[%(asctime)s]: %(message)s"
 logging.basicConfig(level=logging.INFO, format=FORMAT)
 SEED_OFFSET = 0
@@ -76,64 +76,23 @@ def make_env(env_id, idx, capture_video, run_name):
 
     return thunk
 
-def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
-    torch.nn.init.orthogonal_(layer.weight, std)
-    torch.nn.init.constant_(layer.bias, bias_const)
-    return layer
 
-
-class Agent(nn.Module):
-    def __init__(self, envs, alpha = 0.5):
-        super(Agent, self).__init__()
-        self.alpha = alpha
-        self.critic = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, envs.single_action_space.n), std=1.0),
-        )
-        self.actor = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, envs.single_action_space.n), std=0.01),
-        )
-
-    def get_value(self, x):
-        _, _, log_probs, _ = self.get_action(x)
-        q = self.critic(x)
-        v = torch.logsumexp(q * self.alpha +log_probs, dim=-1) / self.alpha
-        return q, v
-
-    def get_action(self, x, action=None):
-        logits = self.actor(x)
-        policy_dist = Categorical(logits=logits)
-        log_probs = F.log_softmax(logits, dim=1)
-        action_probs = policy_dist.probs
-        if action is None:
-            action = policy_dist.sample()
-        return action, policy_dist.log_prob(action), log_probs, action_probs
-    
-def empirical_logistic_bellman(eta, td, values, discount):
-    errors = 1 / eta * torch.log(torch.exp(eta * td).mean()) + torch.mean((1 - discount) * values, 0)
-    return errors
 
 def main(config: dict):
     import torch
     import torch.nn as nn
     import torch.optim as optim
-    seed = config["__trial_index__"] + SEED_OFFSET
+    args.seed = config["__trial_index__"] + SEED_OFFSET
     args = argparse.Namespace(**config)
     
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
-    args.num_iterations = args.total_timesteps // args.batch_size
+    args.num_iterations = args.total_timesteps # // args.batch_size
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     logging_callback=lambda r: train.report({'reward':r})
     if args.track:
         import wandb
+
         wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
@@ -163,15 +122,17 @@ def main(config: dict):
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    agent = Agent(envs).to(device)
-    critic_optimizer = optim.Adam(agent.critic.parameters(), lr=args.learning_rate, eps=1e-5)
-    actor_optimizer = optim.Adam(agent.actor.parameters(), lr=args.learning_rate, eps=1e-5)
-    alpha = args.alpha
+    agent = Agent(envs, args).to(device)
+    critic_optimizer = optim.SGD(agent.critic.parameters(), lr=args.learning_rate)
+    actor_optimizer = optim.SGD(agent.actor.parameters(), lr=args.policy_lr)
+    alpha = torch.Tensor([args.alpha]).to(device)
+    if args.eta == 0: args.eta = args.alpha
+    eta = torch.Tensor([args.eta]).to(device)
+    if args.saddle: sampler = args.sampler(args.minibatch_size, device, eta=eta)
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
-    logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
@@ -183,13 +144,8 @@ def main(config: dict):
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
-    update_policy = False
-    
-    try:
+    try: 
         for iteration in range(1, args.num_iterations + 1):
-
-            if args.num_iterations % args.policy_freq == 0:
-                update_policy = True
             
             # Annealing the rate if instructed to do so.
             if args.anneal_lr:
@@ -197,7 +153,6 @@ def main(config: dict):
                 lrnow = frac * args.learning_rate
                 actor_optimizer.param_groups[0]["lr"] = lrnow
                 critic_optimizer.param_groups[0]["lr"] = lrnow
-                # policy_optimizer.param_groups[0]["lr"] = lrnow
 
             for step in range(0, args.num_steps):
                 global_step += args.num_envs
@@ -212,7 +167,6 @@ def main(config: dict):
                     values[step] = value.flatten()
 
                 actions[step] = action
-                logprobs[step] = action_logprob
 
                 # TRY NOT TO MODIFY: execute the game and log data.
                 next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
@@ -224,18 +178,15 @@ def main(config: dict):
                 if "final_info" in infos:
                     for info in infos["final_info"]:
                         if info and "episode" in info:
-                            print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
+                            # print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                             writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                             writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-        
                             logging_callback(info['episode']['r'])
-
             # bootstrap value if not done
             with torch.no_grad():
                 q, next_value = agent.get_value(next_obs)
                 next_value = next_value.reshape(1, -1)
-                advantages = torch.zeros_like(rewards).to(device)
-                lastgaelam = 0
+                returns = torch.zeros_like(rewards).to(device)
                 for t in reversed(range(args.num_steps)):
                     if t == args.num_steps - 1:
                         nextnonterminal = 1.0 - next_done
@@ -243,19 +194,19 @@ def main(config: dict):
                     else:
                         nextnonterminal = 1.0 - dones[t + 1]
                         nextvalues = values[t + 1]
-                    delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
-                    advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
-                returns = advantages + values
+                    returns[t] = rewards[t] + args.gamma * nextvalues * nextnonterminal
+
 
             # flatten the batch
             b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
-            b_logprobs = logprobs.reshape(-1)
             b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
             b_returns = returns.reshape(-1)
             b_values = values.reshape(-1)
+            b_qs = qs.reshape((-1, envs.single_action_space.n))
 
             b_inds = np.arange(args.batch_size)
             clipfracs = []
+            weights_after_each_epoch = []
             for epoch in range(args.update_epochs):
                 np.random.shuffle(b_inds)
                 for start in range(0, args.batch_size, args.minibatch_size):
@@ -263,28 +214,47 @@ def main(config: dict):
                         mb_inds = b_inds[start:end]
 
                         newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
-                        new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
-                        delta = b_returns[mb_inds] - new_q_a_value
-                        critic_loss = empirical_logistic_bellman(eta=args.alpha, td=delta, values=newvalue, discount=args.gamma)
-                        # critic_loss = delta ** 2
-                        critic_loss = critic_loss.mean()
+                        new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(-1)).squeeze(-1)
+                        
+                        if args.saddle: loss = S(new_q_a_value, b_returns[mb_inds], sampler, newvalue, args.eta, args.gamma)
+                        elif args.gumbel: loss = log_gumbel(new_q_a_value, b_returns[mb_inds], args.eta, newvalue, args.gamma)
+                        else: loss = empirical_logistic_bellman(new_q_a_value, b_returns[mb_inds], args.eta, newvalue, args.gamma)
+                        
                         critic_optimizer.zero_grad()
-                        critic_loss.backward()
+                        loss.backward()
+                        nn.utils.clip_grad_norm_(agent.critic.parameters(), args.max_grad_norm)
                         critic_optimizer.step()
+                        if args.saddle: sampler.update(new_q_a_value.detach(), b_returns[mb_inds])
 
-                        with torch.no_grad():  
-                            newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
-                            new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
-                            weights = torch.clamp(args.alpha * new_q_a_value, -20, 20)
+                weights_after_each_epoch.append(deepcopy(agent.critic.state_dict()))
+            
+            if args.average_critics:
+                avg_weights = {}
+                for key in weights_after_each_epoch[0].keys():
+                    avg_weights[key] = sum(T[key] for T in weights_after_each_epoch) / len(weights_after_each_epoch)
+                agent.critic.load_state_dict(avg_weights)
 
-                        _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs[mb_inds], b_actions.long()[mb_inds])  
-                        actor_loss = -torch.mean(torch.exp(weights)*newlogprob)
+            if args.parametrized:
+                for epoch in range(args.update_policy_epochs):
+                    np.random.shuffle(b_inds)
+                    for start in range(0, args.batch_size, args.minibatch_size):
+                            end = start + args.minibatch_size
+                            mb_inds = b_inds[start:end]
+                            with torch.no_grad():
+                                newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
+                                new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
+                                weights = torch.clamp(new_q_a_value / alpha, -50, 50)
 
-                        # actor_loss = (action_probs*(newlogprobs/alpha - q_vals)).mean()
-                        actor_optimizer.zero_grad()
-                        actor_loss.backward()
-                        actor_optimizer.step()
-        
+                            _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs[mb_inds])
+
+                            if args.nll_loss: actor_loss = torch.mean(torch.exp(weights) * newlogprob)
+                            else: actor_loss = (action_probs * (alpha * newlogprobs - newqvalue)).mean()
+                    
+                            actor_optimizer.zero_grad()
+                            actor_loss.backward()
+                            actor_optimizer.step()
+
+            if args.saddle: sampler.reset()
             y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
             var_y = np.var(y_true)
             explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
@@ -292,9 +262,8 @@ def main(config: dict):
             # TRY NOT TO MODIFY: record rewards for plotting purposes
             writer.add_scalar("charts/learning_rate", critic_optimizer.param_groups[0]["lr"], global_step)
             writer.add_scalar("losses/explained_variance", explained_var, global_step)
-            writer.add_scalar("losses/critic_loss", critic_loss, global_step)
-            #writer.add_scalar("losses/actor_loss", actor_loss, global_step)
-            print("SPS:", int(global_step / (time.time() - start_time)))
+            writer.add_scalar("losses/critic_loss", loss, global_step)
+            writer.add_scalar("losses/actor_loss", actor_loss, global_step)
             writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
     except:
         logging_callback(0.0)
@@ -303,14 +272,14 @@ def main(config: dict):
     writer.close()
 
 search_alg = HEBOSearch(metric="reward", mode="max")
-
 re_search_alg = Repeater(search_alg, repeat=2)
 
 analysis = tune.run(
     main,
+    num_samples=100,
     config=config,
     search_alg=re_search_alg,
-    local_dir="/Users/nicolasvila/workplace/uni/tfg/tests/results_tune",
+    local_dir="/Users/nicolasvila/workplace/uni/tfg_v2/tests/results_tune",
 )
 
 print("Best config: ", analysis.get_best_config(metric="reward", mode="max"))
@@ -318,4 +287,4 @@ print("Best config: ", analysis.get_best_config(metric="reward", mode="max"))
 # Get a dataframe for analyzing trial results.
 df = analysis.results_df
 
-df.to_csv("qreps_analysis.csv")
+df.to_csv("qreps_analysis_v2.csv")

@@ -12,8 +12,8 @@ from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 from replay_buffer import ReplayBuffer, update
 from agent import Agent
-from losses import empirical_logistic_bellman, optimize_loss, S, nll_loss
-from sampler import Sampler
+from losses import empirical_logistic_bellman, optimize_loss, S, nll_loss, sac_loss, log_gumbel
+from sampler import BestResponseSampler, ExponentiatedGradientSampler
 
 @dataclass
 class Args:
@@ -39,30 +39,35 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 100
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-3
+    learning_rate: float = 2e-4
     """the learning rate of the critic"""
     policy_lr: float = 1e-3
     """the learning rate of the actor"""
-    num_envs: int = 5
+    num_envs: int = 4
     """the number of parallel game environments"""
     num_steps: int = 500
     """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = True
+    anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.99
     """the discount factor gamma"""
     num_minibatches: int = 1
     """the number of mini-batches"""
-    update_epochs: int = 100
+    update_epochs: int = 300
     """the K epochs to update the policy"""
-    alpha: float = 0.02 #0.02 was current best
+    alpha: float = 0.8
     """the entropy regularization coefficient"""
     eta: float = 0
     """the entropy regularization coefficient"""
-    parametrized: bool = True
+    parametrized: bool = False
     """if toggled, the policy will be parametrized"""
-    saddle: bool = True
+    saddle: bool = False
     """if toggled, will use saddle point optimization"""
+    sampler = BestResponseSampler
+    """the sampler to use"""
+    nll_loss: bool = False
+    """if toggled, will use NLL loss"""
+    
 
     # to be filled in runtime
     batch_size: int = 0
@@ -128,7 +133,7 @@ if __name__ == "__main__":
     alpha = torch.Tensor([args.alpha]).to(device)
     if args.eta == 0: args.eta = args.alpha
     eta = torch.Tensor([args.eta]).to(device)
-    if args.saddle: sampler = Sampler(args.minibatch_size, device, eta=eta, beta=0.01)
+    if args.saddle: sampler = args.sampler(args.minibatch_size, device, eta=eta)
     buffer = ReplayBuffer(args.num_steps * args.num_envs)
 
     # TRY NOT TO MODIFY: start the game
@@ -172,12 +177,15 @@ if __name__ == "__main__":
         if args.saddle:
             optimize_loss(buffer=buffer, loss_fn=S, optimizer=critic_optimizer, agent=agent, args=args, optimizer_steps=args.update_epochs, sampler=sampler)
         else: 
-            optimize_loss(buffer=buffer, loss_fn=empirical_logistic_bellman, optimizer=critic_optimizer, agent=agent, args=args, optimizer_steps=args.update_epochs)
+            optimize_loss(buffer=buffer, loss_fn=log_gumbel, optimizer=critic_optimizer, agent=agent, args=args, optimizer_steps=args.update_epochs)
         
         # Optimize actor
-        if args.parametrized: optimize_loss(buffer=buffer, loss_fn=nll_loss, optimizer=critic_optimizer, agent=agent, args=args, optimizer_steps=args.update_epochs)
+        if args.parametrized: 
+            if args.nll_loss: optimize_loss(buffer=buffer, loss_fn=nll_loss, optimizer=critic_optimizer, agent=agent, args=args, optimizer_steps=args.update_epochs)
+            else: optimize_loss(buffer=buffer, loss_fn=sac_loss, optimizer=critic_optimizer, agent=agent, args=args, optimizer_steps=args.update_epochs)
         
         buffer.reset()
+        if args.saddle: sampler.reset()
 
         writer.add_scalar("losses/actor_loss", actor_loss, global_step)
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
