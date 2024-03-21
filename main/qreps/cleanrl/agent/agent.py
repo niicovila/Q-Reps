@@ -32,7 +32,8 @@ class Agent(nn.Module):
 
     def get_value(self, x):
         q = self.critic(x)
-        v = self.alpha * torch.logsumexp(q / self.alpha, dim=-1)
+        a = torch.max(q/ self.alpha)
+        v = self.alpha * (a - torch.logsumexp(q / self.alpha -a, dim=-1))
         return q, v
 
     def get_action(self, x, action=None):
@@ -53,4 +54,4 @@ class Agent(nn.Module):
             action_probs = policy_dist.probs
             if action is None:
                 action = policy_dist.sample()
-            return action, policy_dist.log_prob(action), log_probs, action_probs
+            return action, policy_dist.log_prob(action), action_probs

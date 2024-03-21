@@ -36,9 +36,9 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "LunarLander-v2"
     """the id of the environment"""
-    total_timesteps: int = 500000
+    total_timesteps: int = 1000000
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-4
+    learning_rate: float = 2.5e-3
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
@@ -68,7 +68,7 @@ class Args:
     """the maximum norm for the gradient clipping"""
     target_kl: float = None
     """the target KL divergence threshold"""
-    beta: float = 2.5
+    beta: float = 2.466422834473204
     """the beta for the gumbel softmax"""
 
     # to be filled in runtime
@@ -120,7 +120,7 @@ class Agent(nn.Module):
 
     def get_value(self, x):
         q = self.critic(x)
-        v = torch.logsumexp(q * self.alpha, dim=-1) / self.alpha
+        v = torch.logsumexp(q / self.alpha, dim=-1) * self.alpha
         return v
 
     def get_action_and_value(self, x, action=None):
@@ -178,7 +178,7 @@ if __name__ == "__main__":
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
     beta = args.beta
-    agent = Agent(envs, alpha=1/beta).to(device)
+    agent = Agent(envs, alpha=beta).to(device)
     optimizer_critic = optim.Adam(agent.critic.parameters(), lr=args.learning_rate, eps=1e-5)
     optimizer_actor = optim.Adam(agent.actor.parameters(), lr=args.learning_rate, eps=1e-5)
 
@@ -197,7 +197,6 @@ if __name__ == "__main__":
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
-    beta = 0.5
     for iteration in range(1, args.num_iterations + 1):
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
@@ -269,6 +268,15 @@ if __name__ == "__main__":
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
 
+                # Value loss
+                newvalue = newvalue.view(-1)
+                v_loss = gumbel_log_loss(newvalue, b_returns[mb_inds], beta, clip=10)
+
+                optimizer_critic.zero_grad()
+                v_loss.backward()
+                nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+                optimizer_critic.step()
+
                 with torch.no_grad():
                     # calculate approx_kl http://joschu.net/blog/kl-approx.html
                     old_approx_kl = (-logratio).mean()
@@ -287,16 +295,7 @@ if __name__ == "__main__":
                 optimizer_actor.zero_grad()
                 pg_loss.backward()
                 optimizer_actor.step()
-
-
-                # Value loss
-                newvalue = newvalue.view(-1)
-                v_loss = gumbel_log_loss(newvalue, b_returns[mb_inds], beta, clip=10)
-
-                optimizer_critic.zero_grad()
-                v_loss.backward()
-                nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
-                optimizer_critic.step()
+            
 
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break

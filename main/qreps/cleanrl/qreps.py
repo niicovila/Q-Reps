@@ -48,9 +48,9 @@ class Args:
     """the learning rate of the optimizer"""
     policy_lr: float = 1e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 1
+    num_envs: int = 4
     """the number of parallel game environments"""
-    num_steps: int = 500
+    num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -70,7 +70,7 @@ class Args:
     """the entropy regularization coefficient"""
     parametrized: bool = True
     """if toggled, the policy will be parametrized"""
-    saddle: bool = False
+    saddle: bool = True
     """if toggled, will use saddle point optimization"""
     gumbel: bool = False
     """if toggled, will use gumbel loss for critic optimization"""
@@ -152,6 +152,7 @@ if __name__ == "__main__":
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    logprobs = torch.zeros((args.num_steps, args.num_envs, envs.single_action_space.n)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
     qs = torch.zeros((args.num_steps, args.num_envs, envs.single_action_space.n)).to(device)
 
@@ -177,12 +178,14 @@ if __name__ == "__main__":
 
             # ALGO LOGIC: action logic
             with torch.no_grad():        
-                action, action_logprob, log_probs, action_probs = agent.get_action(next_obs)
+                action, logprob, action_probs = agent.get_action(next_obs)
                 q, value = agent.get_value(next_obs)
                 qs[step] = q
                 values[step] = value.flatten()
+                all_logprobs = torch.log(action_probs)
 
             actions[step] = action
+            logprobs[step] = all_logprobs
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
@@ -210,6 +213,7 @@ if __name__ == "__main__":
                 else:
                     nextnonterminal = 1.0 - dones[t + 1]
                     nextvalues = values[t + 1]
+
                 returns[t] = rewards[t] + args.gamma * nextvalues * nextnonterminal
             
 
@@ -217,6 +221,7 @@ if __name__ == "__main__":
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
         b_returns = returns.reshape(-1)
+        b_logprobs = logprobs.reshape((-1, envs.single_action_space.n))
         b_values = values.reshape(-1)
         b_qs = qs.reshape((-1, envs.single_action_space.n))
 
@@ -258,19 +263,21 @@ if __name__ == "__main__":
                         mb_inds = b_inds[start:end]
                         with torch.no_grad():
                             newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
-                            new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
-                            weights = torch.clamp(new_q_a_value / alpha, -50, 50)
+                            # new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
+                            # weights = torch.clamp(new_q_a_value / alpha, -50, 50)
 
-                        _, newlogprob, newlogprobs, action_probs = agent.get_action(b_obs[mb_inds])
+                        _, newlogprob, action_probs = agent.get_action(b_obs[mb_inds])
+                        newlogprobs = torch.log(action_probs)
 
-                        if args.nll_loss: actor_loss = torch.mean(torch.exp(weights) * newlogprob)
-                        else: actor_loss = (action_probs * (alpha * newlogprobs - newqvalue)).mean()
+                       #  if args.nll_loss: actor_loss = torch.mean(torch.exp(weights) * newlogprob)
+                        
+                        actor_loss = (action_probs * (alpha * (newlogprobs- b_logprobs[mb_inds]) - newqvalue)).sum()
                 
                         actor_optimizer.zero_grad()
                         actor_loss.backward()
                         actor_optimizer.step()
 
-        sampler.reset()
+        # sampler.reset()
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y

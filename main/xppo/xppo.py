@@ -120,7 +120,7 @@ class Agent(nn.Module):
 
     def get_value(self, x):
         q = self.critic(x)
-        v = torch.logsumexp(q * self.alpha, dim=-1) / self.alpha
+        v = self.alpha * torch.logsumexp(q / self.alpha, dim=-1)
         return v
 
     def get_action_and_value(self, x, action=None):
@@ -178,7 +178,7 @@ if __name__ == "__main__":
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
     beta = args.beta
-    agent = Agent(envs, alpha=1/beta).to(device)
+    agent = Agent(envs, alpha=beta).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
     
     # ALGO Logic: Storage setup

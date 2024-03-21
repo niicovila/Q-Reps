@@ -90,16 +90,13 @@ def train(config: dict):
 
     env = make_env(config.env_id, config.capture_video, run_name)
 
-    # env = gym.make("CartPole-v1", render_mode="rgb_array")
-    # env = gym.wrappers.RecordVideo(env, f"videos/{'cartpole'}")
-
     num_obs = env.observation_space.shape[0]
     num_act = env.action_space.n
 
     q_function = NNQFunction(obs_dim=num_obs, act_dim=num_act, feature_fn=IdentityFeature()).to(device)
     policy = CategoricalMLP(num_obs, num_act).to(device)
-
     # policy = QREPSPolicy(q_function, temp=config.eta)
+    
     writer = SummaryWriter()
 
     agent = SaddleQREPS(

@@ -25,10 +25,11 @@ def optimize_loss(buffer, loss_fn, optimizer: torch.optim.Optimizer, args, agent
     for i in range(optimizer_steps):
         optimizer.step(closure)
 
-def empirical_logistic_bellman(pred, label, eta, values, discount):
-    z = (label - pred) / eta
-    z = torch.clamp(z, -50, 50)
-    return  eta * torch.log(torch.exp(z).mean()) + torch.mean((1 - discount) * values, 0)
+def empirical_logistic_bellman(pred, label, probs, eta, values, discount):
+    z = torch.mean(((label - pred) / eta) * torch.log(probs), dim=1)
+    a = torch.max(z)
+    t = a + torch.log(torch.sum(torch.exp(z-a)))
+    return  eta * t + torch.mean((1 - discount) * values, 0)
 
 def empirical_logistic_bellman_trick(pred, label, eta, values, discount):
     z = (label - pred) / eta

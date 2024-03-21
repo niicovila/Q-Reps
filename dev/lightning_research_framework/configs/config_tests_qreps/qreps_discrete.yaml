@@ -26,9 +26,8 @@ network_kwargs:
   critic_class: DiscreteMLPCritic
   critic_kwargs:
     hidden_layers: [256, 256]
-  encoder_class: DrQv2Encoder
   # encoder_kwargs:
-  # ortho_init: true
+  ortho_init: true
 
 
 batch_size: null # Use serial replay buffer
@@ -36,7 +35,7 @@ collate_fn: null # The collate function passed to the dataloader. None uses pyto
 checkpoint: null # A checkpoint to initialize the network from.
 seed: null
 
-env: ALE/Alien-v5
+env: CartPole-v1
 
 dataset: ReplayBuffer
 dataset_kwargs:
