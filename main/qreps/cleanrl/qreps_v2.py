@@ -44,7 +44,7 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    env_id: str = "LunarLander-v2"
+    env_id: str = "CartPole-v1"
     """the id of the environment"""
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
@@ -52,7 +52,7 @@ class Args:
     """the number of parallel game environments"""
     buffer_size: int = int(1e6)
     """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
-    gamma: float = 0.99
+    gamma: float = 1.0
     """the discount factor gamma"""
     tau: float = 1.0
     """target smoothing coefficient (default: 1)"""
@@ -64,15 +64,17 @@ class Args:
     """the learning rate of the policy network optimizer"""
     q_lr: float = 3e-4
     """the learning rate of the Q network network optimizer"""
-    update_frequency: int = 4
+    update_frequency: int = 1
     """the frequency of training updates"""
-    target_network_frequency: int = 32
+    target_network_frequency: int = 2
     """the frequency of updates for the target networks"""
     alpha: float = 2
     """Entropy regularization coefficient."""
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
-    target_entropy_scale: float = 0.89
+    eta: float = 2.0
+    """coefficient for the logistic loss"""
+    target_entropy_scale: float = 0.1
     """coefficient for scaling the autotune entropy target"""
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -250,6 +252,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
+
+            
             if global_step % args.update_frequency == 0:
                 data = rb.sample(args.batch_size)
                 with torch.no_grad():
@@ -262,26 +266,20 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                         torch.min(qf1_next_target, qf2_next_target) - alpha * next_state_log_pi
                     )
                     
-                    min_qf_next_target = torch.min(qf1_next_target, qf2_next_target)
+                    # min_qf_next_target = torch.min(qf1_next_target, qf2_next_target)
                     value_target = alpha * torch.logsumexp(min_qf_next_target / alpha, dim=1)
 
                     # adapt Q-target for discrete Q-function
                     min_qf_next_target = min_qf_next_target.sum(dim=1)
-                    next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (value_target)
+                    next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target)
 
                 qf1_values = qf1(data.observations)
                 qf2_values = qf2(data.observations)
                 qf1_a_values = qf1_values.gather(1, data.actions.long()).view(-1)
                 qf2_a_values = qf2_values.gather(1, data.actions.long()).view(-1)
-
-                values_qf1 = alpha * torch.logsumexp(qf1_values / alpha, dim=1).detach()
-                values_qf2 = alpha * torch.logsumexp(qf2_values / alpha, dim=1).detach()
-
-                qf1_loss = log_gumbel(qf1_a_values, next_q_value, alpha, values_qf1, args.gamma)
-                qf2_loss = log_gumbel(qf2_a_values, next_q_value, alpha, values_qf2, args.gamma) 
                 
-                # qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
-                # qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
+                qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
+                qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
 
                 qf_loss = qf1_loss + qf2_loss
                 
@@ -289,8 +287,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 q_optimizer.zero_grad()
                 qf_loss.backward()
                 q_optimizer.step()
-
-                # ACTOR training
+                
+            # ACTOR training
                 _, action_log_pi, log_pi, action_probs = actor.get_action(data.observations)
                 with torch.no_grad():
                     qf1_values = qf1(data.observations)

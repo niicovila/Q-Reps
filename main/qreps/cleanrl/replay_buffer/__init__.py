@@ -1,1 +1,1 @@
-from .replay_buffer import ReplayBuffer, update
+from .replay_buffer import ReplayBuffer

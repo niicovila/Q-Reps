@@ -16,28 +16,30 @@ class Agent(nn.Module):
         self.parametrized = args.parametrized
 
         self.critic = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, envs.single_action_space.n), std=1.0),
+            nn.Linear(np.array(envs.single_observation_space.shape).prod(), 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, envs.single_action_space.n)
         )
         self.actor = nn.Sequential(
             layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 128)),
-            nn.Tanh(),
+            nn.ReLU(),
             layer_init(nn.Linear(128, 128)),
-            nn.Tanh(),
+            nn.ReLU(),
             layer_init(nn.Linear(128, envs.single_action_space.n), std=0.01),
         )
 
     def get_value(self, x):
         q = self.critic(x)
-        a = torch.max(q/ self.alpha)
-        v = self.alpha * (a - torch.logsumexp(q / self.alpha -a, dim=-1))
+        z = q / self.alpha
+        _, _, _, pi_k = self.get_action(x)
+        # max_z = torch.max(z, dim=-1, keepdim=True)[0]
+        # max_z = torch.where(max_z < -1.0, torch.tensor(-1.0, dtype=torch.float, device=max_z.device), max_z)
+        v = self.alpha * (torch.log(torch.sum(pi_k * torch.exp(z), dim=1)))
         return q, v
 
     def get_action(self, x, action=None):
-
         if not self.parametrized:
             logits, v = self.get_value(x)
             policy_dist = Categorical(logits=logits)
@@ -54,4 +56,4 @@ class Agent(nn.Module):
             action_probs = policy_dist.probs
             if action is None:
                 action = policy_dist.sample()
-            return action, policy_dist.log_prob(action), action_probs
+            return action, policy_dist.log_prob(action), log_probs, action_probs

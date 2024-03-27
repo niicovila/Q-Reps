@@ -51,15 +51,15 @@ SEED_OFFSET = 0
 qreps_config = {
     "env_id": "CartPole-v1",
     "track": False,
-    "eta": 0.005,
-    "alpha": 0.05,
-    "beta": 0.0001,
+    "eta": 0.204,
+    "alpha": None,
+    "beta": 0.001,
     "saddle_point_steps": 300,
     "policy_opt_steps": 300,
-    "discount": 0.99,
+    "discount": 0.99 ,
     "wandb_project_name": "qreps",
     "wandb_entity": None,
-    "seed" : 0,
+    "seed" : 1,
     "exp_name": os.path.basename(__file__)[: -len(".py")],
     "num_envs": 1,
     "capture_video": False,
@@ -93,26 +93,43 @@ def train(config: dict):
     num_obs = env.observation_space.shape[0]
     num_act = env.action_space.n
 
-    q_function = NNQFunction(obs_dim=num_obs, act_dim=num_act, feature_fn=IdentityFeature()).to(device)
-    policy = CategoricalMLP(num_obs, num_act).to(device)
+    # q_function = NNQFunction(obs_dim=num_obs, act_dim=num_act, feature_fn=IdentityFeature()).to(device)
+    # policy = CategoricalMLP(num_obs, num_act).to(device)
     # policy = QREPSPolicy(q_function, temp=config.eta)
-    
+
+    q_function = NNQFunction(
+        obs_dim=num_obs, act_dim=num_act, feature_fn=IdentityFeature()
+    )
+    policy = CategoricalMLP(num_obs, 2)
+
     writer = SummaryWriter()
 
-    agent = SaddleQREPS(
+    agent = QREPS(
         writer=writer,
         policy=policy,
         q_function=q_function,
-        optimize_policy=True,
-        policy_lr=0.02,
-        sampler=ExponentiatedGradientSampler,
+        learner=torch.optim.Adam,
         reward_transformer=lambda r: r / 5,
         device = device,
-        **vars(config))
+        **vars(config),
+    )
+    
+    writer = SummaryWriter()
+
+    # agent = SaddleQREPS(
+    #     writer=writer,
+    #     policy=policy,
+    #     q_function=q_function,
+    #     optimize_policy=True,
+    #     policy_lr=0.02,
+    #     sampler=ExponentiatedGradientSampler,
+    #     reward_transformer=lambda r: r / 5,
+    #     device = device,
+    #     **vars(config))
 
     trainer = Trainer(config.seed)
     trainer.setup(agent, env)
-    reward = trainer.train(num_iterations=100, max_steps=200, number_rollouts=5)
+    reward = trainer.train(num_iterations=30, max_steps=200, number_rollouts=5)
     env.close()
     writer.close()
     return reward

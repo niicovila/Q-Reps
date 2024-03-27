@@ -25,7 +25,7 @@ class QREPS(AbstractAlgorithm):
         eta: float = 0.5,
         alpha: float = None,
         learner: Type[torch.optim.Optimizer] = torch.optim.SGD,
-        optimize_policy: bool = False,
+        optimize_policy: bool = True,
         *args,
         **kwargs,
     ):
@@ -45,7 +45,7 @@ class QREPS(AbstractAlgorithm):
         self, features: Tensor, features_next: Tensor, rewards: Tensor, actions: Tensor
     ) -> Tensor:
         # Clamping added for stability. Could potentially blow up the policy otherwise
-        return torch.clamp(self.alpha * self.q_function(features, actions), -50, 50)
+        return torch.clamp(self.alpha * self.q_function(features, actions), -20, 20)
 
     def dual(self, observations, next_observations, rewards, actions):
         return empirical_logistic_bellman(

@@ -91,9 +91,7 @@ class GumbelTD3V2(TD3):
             target_q = torch.min(target_q, dim=0)[0]
             closed_solution_v = (self.beta * torch.log(torch.exp(target_q/self.beta)))
 
-            gap = sum(target_q-closed_solution_v)
-            
-            target_q = batch['reward'] + batch['discount'] * closed_solution_v
+            target_q = batch['reward'] + batch['discount'] * target_q
 
         qs = self.network.critic(batch['obs'], batch['action'])
        

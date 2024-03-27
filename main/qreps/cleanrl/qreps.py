@@ -42,15 +42,15 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 30
+    total_timesteps: int = 100
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-4
+    learning_rate: float = 2.5e-3
     """the learning rate of the optimizer"""
     policy_lr: float = 1e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 4
+    num_envs: int = 1
     """the number of parallel game environments"""
-    num_steps: int = 128
+    num_steps: int = 500
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -64,22 +64,22 @@ class Args:
     """the K epochs to update the policy"""
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
-    alpha: float = 2 #0.02 was current best
+    alpha: float = 2
     """the entropy regularization coefficient"""
-    eta: float = 0.0
-    """the entropy regularization coefficient"""
+    eta: float = 2
+    """the KL regularization coefficient"""
     parametrized: bool = True
     """if toggled, the policy will be parametrized"""
-    saddle: bool = True
+    saddle: bool = False
     """if toggled, will use saddle point optimization"""
-    gumbel: bool = False
-    """if toggled, will use gumbel loss for critic optimization"""
     nll_loss: bool = False
     """if toggled, will use nll for policy optimization"""
-    sampler = BestResponseSampler
+    sampler = ExponentiatedGradientSampler
     """the sampler to use for the optimization -either ExponentiatedGradientSampler or BestResponseSampler-"""
-    average_critics: bool = True
+    average_critics: bool = False
     """if toggled, will average the critics after each iteration"""
+    exp_clip: float = 8.0
+    """the clipping value for the exps"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -143,7 +143,6 @@ if __name__ == "__main__":
     critic_optimizer = optim.SGD(agent.critic.parameters(), lr=args.learning_rate)
     actor_optimizer = optim.SGD(agent.actor.parameters(), lr=args.policy_lr)
     alpha = torch.Tensor([args.alpha]).to(device)
-    if args.eta == 0: args.eta = args.alpha
     eta = torch.Tensor([args.eta]).to(device)
     sampler = args.sampler(args.minibatch_size, device, eta=eta)
 
@@ -162,6 +161,7 @@ if __name__ == "__main__":
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
+    actor_loss=0
     for iteration in range(1, args.num_iterations + 1):
         
         # Annealing the rate if instructed to do so.
@@ -178,11 +178,11 @@ if __name__ == "__main__":
 
             # ALGO LOGIC: action logic
             with torch.no_grad():        
-                action, logprob, action_probs = agent.get_action(next_obs)
+                action, a_logprob, logprob, action_probs = agent.get_action(next_obs)
                 q, value = agent.get_value(next_obs)
                 qs[step] = q
                 values[step] = value.flatten()
-                all_logprobs = torch.log(action_probs)
+                all_logprobs = logprob
 
             actions[step] = action
             logprobs[step] = all_logprobs
@@ -213,7 +213,6 @@ if __name__ == "__main__":
                 else:
                     nextnonterminal = 1.0 - dones[t + 1]
                     nextvalues = values[t + 1]
-
                 returns[t] = rewards[t] + args.gamma * nextvalues * nextnonterminal
             
 
@@ -237,15 +236,14 @@ if __name__ == "__main__":
                     newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
                     new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(-1)).squeeze(-1)
 
-                    if args.saddle: loss = S(new_q_a_value, b_returns[mb_inds], sampler, newvalue, args.eta, args.gamma)
-                    elif args.gumbel: loss = log_gumbel(new_q_a_value, b_returns[mb_inds], args.eta, newvalue, args.gamma)
-                    else: loss = empirical_logistic_bellman_trick(new_q_a_value, b_returns[mb_inds], args.eta, newvalue, args.gamma)
+                    if args.saddle: loss = S(new_q_a_value, b_returns[mb_inds], sampler, newvalue.detach(), eta, args.gamma)
+                    else: loss = empirical_logistic_bellman(new_q_a_value, b_returns[mb_inds], args.eta, newvalue.detach(), args.gamma, args.exp_clip)
                     
                     critic_optimizer.zero_grad()
                     loss.backward()
                     nn.utils.clip_grad_norm_(agent.critic.parameters(), args.max_grad_norm)
                     critic_optimizer.step()
-                    sampler.update(new_q_a_value.detach(), b_returns[mb_inds])
+                    if args.saddle: sampler.update(new_q_a_value.detach(), b_returns[mb_inds])
 
             weights_after_each_epoch.append(deepcopy(agent.critic.state_dict()))
         
@@ -263,21 +261,21 @@ if __name__ == "__main__":
                         mb_inds = b_inds[start:end]
                         with torch.no_grad():
                             newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
-                            # new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(1)).view(-1)
-                            # weights = torch.clamp(new_q_a_value / alpha, -50, 50)
+       
+                            # newvalue = newvalue.repeat(2,1).reshape(125, 2)
+                            # advantage = newqvalue - newvalue
+                            # advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
 
-                        _, newlogprob, action_probs = agent.get_action(b_obs[mb_inds])
+                        _, a_newlogprob, newlogprob, action_probs = agent.get_action(b_obs[mb_inds])
                         newlogprobs = torch.log(action_probs)
 
-                       #  if args.nll_loss: actor_loss = torch.mean(torch.exp(weights) * newlogprob)
-                        
-                        actor_loss = (action_probs * (alpha * (newlogprobs- b_logprobs[mb_inds]) - newqvalue)).sum()
+                        actor_loss = (action_probs * (alpha * (newlogprob - b_logprobs[mb_inds]) - b_qs[mb_inds])).sum()
                 
                         actor_optimizer.zero_grad()
                         actor_loss.backward()
                         actor_optimizer.step()
 
-        # sampler.reset()
+        if args.saddle: sampler.reset()
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y

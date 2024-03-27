@@ -1,5 +1,6 @@
 import numpy as np
 from dm_env import Environment, truncation
+import torch
 
 
 class Trainer:

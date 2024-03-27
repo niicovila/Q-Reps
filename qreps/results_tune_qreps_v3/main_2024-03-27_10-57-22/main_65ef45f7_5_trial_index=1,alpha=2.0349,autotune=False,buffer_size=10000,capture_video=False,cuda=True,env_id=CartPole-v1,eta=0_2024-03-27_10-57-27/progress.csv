@@ -1,0 +1,4 @@
+reward,timestamp,checkpoint_dir_name,done,training_iteration,trial_id,date,time_this_iter_s,time_total_s,pid,hostname,node_ip,time_since_restore,iterations_since_restore
+12.2,1711533455,,False,1,65ef45f7,2024-03-27_10-57-35,2.267772912979126,2.267772912979126,15280,Nicolass-Air.technicolor.net,127.0.0.1,2.267772912979126,1
+21.6,1711533458,,False,2,65ef45f7,2024-03-27_10-57-38,3.2840230464935303,5.551795959472656,15280,Nicolass-Air.technicolor.net,127.0.0.1,5.551795959472656,2
+11.0,1711533460,,False,3,65ef45f7,2024-03-27_10-57-40,2.1391100883483887,7.690906047821045,15280,Nicolass-Air.technicolor.net,127.0.0.1,7.690906047821045,3

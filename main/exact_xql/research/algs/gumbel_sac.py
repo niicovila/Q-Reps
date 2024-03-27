@@ -17,6 +17,7 @@ def gumbel_loss(pred, label, beta, clip):
         z = torch.clamp(z, -clip, clip)
     loss = torch.exp(z) - z - 1
     return loss
+
 def gumbel_log_loss_v1(pred, label, beta, clip):
     assert pred.shape == label.shape, "Shapes were incorrect"
     z = (label - pred)/beta
@@ -58,13 +59,6 @@ def gumbel_rescale_loss(pred, label, beta, clip):
     loss = torch.exp(z - max_z) - z*torch.exp(-max_z) - torch.exp(-max_z)    
     return loss
 
-def gumbel_log_loss(pred, label, beta, clip):
-    assert pred.shape == label.shape, "Shapes were incorrect"
-    z = (label - pred)/beta
-    if clip is not None:
-        z = torch.clamp(z, -clip, clip)
-    loss = torch.exp(z) - z - 1
-    return loss
 
 def mse_loss(pred, label):
     return (label - pred)**2

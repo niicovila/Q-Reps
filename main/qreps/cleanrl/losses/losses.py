@@ -25,11 +25,28 @@ def optimize_loss(buffer, loss_fn, optimizer: torch.optim.Optimizer, args, agent
     for i in range(optimizer_steps):
         optimizer.step(closure)
 
-def empirical_logistic_bellman(pred, label, probs, eta, values, discount):
-    z = torch.mean(((label - pred) / eta) * torch.log(probs), dim=1)
-    a = torch.max(z)
-    t = a + torch.log(torch.sum(torch.exp(z-a)))
-    return  eta * t + torch.mean((1 - discount) * values, 0)
+def empirical_logistic_bellman(pred, label, eta, values, discount, clip=None):
+    z = (label - pred) / eta
+    if clip is not None:
+        z = torch.clamp(z, -clip, clip)
+    max_z = torch.max(z)
+    max_z = torch.where(max_z < -1.0, torch.tensor(-1.0, dtype=torch.float, device=max_z.device), max_z)
+    max_z = max_z.detach()
+    loss = torch.log(torch.sum(torch.exp(z - max_z)))
+    return  eta * loss + torch.mean((1 - discount) * values, 0)
+
+
+
+def gumbel_rescale_loss(pred, label, beta, clip):
+    assert pred.shape == label.shape, "Shapes were incorrect"
+    z = (label - pred)/beta
+    if clip is not None:
+        z = torch.clamp(z, -clip, clip)
+    max_z = torch.max(z)
+    max_z = torch.where(max_z < -1.0, torch.tensor(-1.0, dtype=torch.float, device=max_z.device), max_z)
+    max_z = max_z.detach() # Detach the gradients
+    loss = torch.exp(z - max_z) - z*torch.exp(-max_z) - torch.exp(-max_z)    
+    return loss.mean()
 
 def empirical_logistic_bellman_trick(pred, label, eta, values, discount):
     z = (label - pred) / eta
@@ -44,7 +61,7 @@ def log_gumbel(pred, label, eta, values, discount):
 
 def S(pred, label, sampler, values, eta, discount):
     bellman = label - pred
-    return torch.sum(sampler.probs().detach() * (bellman - eta * torch.log((sampler.n * sampler.probs().detach()))) +  (1-discount) * values)
+    return torch.sum(sampler.probs().detach() * (bellman - eta * torch.log((sampler.n * sampler.probs().detach())))) +  (1-discount) * values.mean()
     
 def nll_loss(observations, next_observations, rewards, actions, agent, args):
     newqvalue, newvalue = agent.get_value(observations)

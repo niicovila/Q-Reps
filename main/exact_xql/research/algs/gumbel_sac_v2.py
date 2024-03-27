@@ -241,8 +241,8 @@ class GumbelSACV2(Algorithm):
                 noisy_next_action = net.actor(batch['next_obs']).rsample()
                 target_q = self.target_network.critic(batch['next_obs'], noisy_next_action)
                 target_q = torch.min(target_q, dim=0)[0]
-                closed_solution_v = (self.beta * torch.log(torch.exp(target_q/self.beta)))
-                target_q = batch['reward'] + batch['discount']*closed_solution_v
+                # closed_solution_v = (self.beta * torch.log(torch.exp(target_q/self.beta)))
+                target_q = batch['reward'] + batch['discount']*target_q
 
             qs = self.network.critic(batch['obs'], batch['action'])
 
