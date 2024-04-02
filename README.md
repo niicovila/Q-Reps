@@ -9,8 +9,16 @@ Fast convergence in LunarLander and CartPole (for now).
 ##### CartPole-v1
 ![Reference Image](dev/assets/img/cartpole.png)
 
+
+https://github.com/niicovila/Q-Reps/assets/76247144/4faa3bb3-72bb-4efd-b046-dd61b7bc2589
+
+
 ##### LunarLander-v2
 ![Reference Image](dev/assets/img/lunar_lander.png)
+
+
+https://github.com/niicovila/Q-Reps/assets/76247144/5c5d5612-cb05-484c-9802-089573d66547
+
 
 ### XPPO
 ![Reference Image](dev/assets/img/xppo.png)
