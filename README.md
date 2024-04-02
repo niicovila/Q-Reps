@@ -4,7 +4,7 @@ A study of regularized reinforcement learning algorithms from both a MaxEntRL an
 In main, you will find the three main algorithms I'm currently working on.
 
 ### Provisional Results:
-#### QREPS
+### QREPS
 Fast convergence in LunarLander and CartPole (for now).
 ##### CartPole-v1
 ![Reference Image](dev/assets/img/cartpole.png)
@@ -12,12 +12,12 @@ Fast convergence in LunarLander and CartPole (for now).
 ##### LunarLander-v2
 ![Reference Image](dev/assets/img/lunar_lander.png)
 
-#### XPPO
+### XPPO
 ![Reference Image](dev/assets/img/xppo.png)
 
-#### XSAC
+### XSAC
 ![Reference Image](dev/assets/img/exact_xsac.png)
 
-#### XTD3
+### XTD3
 ![Reference Image](dev/assets/img/exact_xtd3.png)
 
