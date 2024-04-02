@@ -1,2 +1,0 @@
-reward,timestamp,checkpoint_dir_name,done,training_iteration,trial_id,date,time_this_iter_s,time_total_s,pid,hostname,node_ip,time_since_restore,iterations_since_restore
-0.0,1711466254,,False,1,22d63339,2024-03-26_16-17-34,0.02104926109313965,0.02104926109313965,524,Nicolass-Air.technicolor.net,127.0.0.1,0.02104926109313965,1

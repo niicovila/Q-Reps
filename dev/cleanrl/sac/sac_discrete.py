@@ -33,7 +33,7 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
+    track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "SAC_Discrete"
     """the wandb's project name"""
@@ -47,7 +47,7 @@ class Args:
     """the id of the environment"""
     num_envs: int = 5
     """the number of parallel game environments"""
-    total_timesteps: int = 100000
+    total_timesteps: int = 30000
     """total timesteps of the experiments"""
     buffer_size: int = int(1e6)
     """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
