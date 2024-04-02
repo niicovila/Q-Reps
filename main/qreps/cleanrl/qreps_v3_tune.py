@@ -8,9 +8,9 @@ import torch
 import torch.nn as nn
 from replay_buffer import ReplayBuffer
 
+
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
-
 from ray import train
 from ray.tune.search import Repeater
 from ray.tune.search.hebo import HEBOSearch
@@ -30,24 +30,25 @@ config = {
   "wandb_project_name": "QREPS_CartPole-v1",
   "wandb_entity": 'TFG',
   "capture_video": False,
-  "env_id": "LunarLander-v2",
-  "total_timesteps": 1000,
-  "num_updates": 100,
+  "env_id": "CartPole-v1",
+  "total_timesteps": 500,
+  "num_updates": 20,
   "buffer_size": 10000,
-  "update_epochs": 50,
-  "update_policy_epochs": tune.choice([50, 300]),
+  "update_epochs": tune.choice([5, 50, 100, 300]),
+  "update_policy_epochs": tune.choice([50, 300, 450]),
   "num_rollouts": 5,
-  "num_envs": 1,
+  "num_rollouts": 5, 
+  "num_envs": tune.choice([1, 4, 6]),
   "gamma": 0.99,
-  "policy_lr_start": tune.choice([2e-2, 2.5e-3]),
-  "q_lr_start": tune.choice([0.1, 2e-2]),
-  "q_lr_end":  tune.choice([0.001, 1e-5]),
-  "policy_lr_end":  tune.choice([0.001, 1e-5]),
-  "alpha":  tune.choice([2, 4]),
+  "policy_lr_start": tune.choice([0.1, 2e-2, 2.5e-3]),
+  "q_lr_start": tune.choice([0.1, 2e-2, 2.5e-3]),
+  "q_lr_end":  tune.choice([2.5e-3, 0.0002, 1e-5]),
+  "policy_lr_end":  tune.choice([2.5e-3, 0.0002, 1e-5]),
+  "alpha":  tune.choice([0.2, 0.5, 2, 4, 6]),
   "eta": None,
-  "beta": 4e-5,
-  "autotune":  True,
-  "target_entropy_scale": tune.choice([0.35, 0.5]),
+  "beta": tune.choice([0.1, 0.01, 0.002, 4e-5]),
+  "autotune":  tune.choice([True, False]),
+  "target_entropy_scale": tune.choice([0.2, 0.35, 0.5, 0.89]),
   "use_linear_schedule":  tune.choice([True, False]),
   "saddle_point_optimization":  tune.choice([True, False]),
   "use_kl_loss": tune.choice([True, False]),
@@ -110,7 +111,7 @@ class ExponentiatedGradientSampler:
 def empirical_bellman_error(observations, next_observations, actions, rewards, qf, policy, gamma):
     v_target = qf.get_values(next_observations, actions, policy)[1]
     q_features = qf.get_values(observations, actions, policy)[0]
-    output = rewards + gamma * v_target - q_features
+    output = rewards + gamma * v_target.detach() - q_features
     return output
 
 def saddle(eta, observations, next_observations, actions, rewards, qf, policy, gamma, sampler):
@@ -255,8 +256,8 @@ def main(config: dict):
     actor = QREPSPolicy(envs).to(device)
     qf = QNetwork(envs, args).to(device)
 
-    q_optimizer = optim.SGD(list(qf.parameters()), lr=args.q_lr_start)
-    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr_start)
+    q_optimizer = optim.Adam(list(qf.parameters()), lr=args.q_lr_start, eps=1e-4)
+    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr_start, eps=1e-4)
 
     if args.autotune:
         target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
@@ -283,11 +284,8 @@ def main(config: dict):
 
             for N in range(args.num_rollouts):
                 obs, _ = envs.reset(seed=args.seed)
-                # for step in range(args.total_timesteps):
-                step=0
-                done=np.array([False]*args.num_envs)
-                while step < args.total_timesteps and not done.any():
-                    global_step += 1
+                for step in range(args.total_timesteps):
+                    global_step += args.num_envs
                     with torch.no_grad():
                         actions, a_loglike, loglikes, probs = actor.get_action(torch.Tensor(obs).to(device))
                     action = actions.numpy()
@@ -297,9 +295,8 @@ def main(config: dict):
                     rb.push(obs, next_obs, action, reward, done, loglikes)
                     obs = next_obs
                     all_rewards.append(reward)
-                    step += 1
-                    # if done.any():
-                    #     break
+                    if done.any():
+                        break
 
             # TRAINING PHASE         
             (
@@ -310,6 +307,12 @@ def main(config: dict):
             dones, 
             log_likes
             ) = rb.get_all()
+
+            observations = observations.to(device)
+            next_observations = next_observations.to(device)
+            actions = actions.to(device)
+            rewards = rewards.to(device)
+            log_likes = log_likes.to(device)
 
             if args.saddle_point_optimization:
                 sampler = ExponentiatedGradientSampler(observations.shape[0], device, eta, beta=args.beta)
@@ -324,7 +327,7 @@ def main(config: dict):
 
             logging_callback(np.sum(all_rewards)/(args.num_rollouts*args.num_envs))
             if args.autotune:
-                actions, _, loglikes, probs = actor.get_action(torch.Tensor(obs).to(device))
+                actions, a_loglike, loglikes, probs = actor.get_action(torch.Tensor(obs).to(device))
                 # re-use action probabilities for temperature loss
                 alpha_loss = (probs.detach() * (-log_alpha.exp() * (loglikes + target_entropy).detach())).mean()
 
@@ -332,20 +335,28 @@ def main(config: dict):
                 alpha_loss.backward()
                 a_optimizer.step()
                 alpha = log_alpha.exp().item()
+                qf.alpha = alpha
         
     except:
         logging_callback(0.0)
     envs.close()
     writer.close()
 
+ray_init_config = {
+    "num_gpus": 1,  # Adjust based on the number of available GPUs
+    "num_cpus": 4,  # Number of CPU cores to allocate per trial
+    # Additional Ray initialization options if needed
+}
+
 search_alg = HEBOSearch(metric="reward", mode="max")
-re_search_alg = Repeater(search_alg, repeat=1)
+re_search_alg = Repeater(search_alg, repeat=5)
 
 analysis = tune.run(
     main,
-    num_samples=800,
+    num_samples=200,
     config=config,
     search_alg=re_search_alg,
+    resources_per_trial=ray_init_config,
     local_dir="/Users/nicolasvila/workplace/uni/tfg_v2/tests/qreps/results_tune_qreps_v3",
 )
 
@@ -354,4 +365,4 @@ print("Best config: ", analysis.get_best_config(metric="reward", mode="max"))
 # Get a dataframe for analyzing trial results.
 df = analysis.results_df
 
-df.to_csv("qreps_analysis_v3_500_full_tuning_lunar_V2_100U.csv")
+df.to_csv("tuning_no_grad.csv")

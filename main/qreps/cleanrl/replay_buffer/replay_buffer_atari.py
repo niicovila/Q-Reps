@@ -40,12 +40,12 @@ class ReplayBufferAtari(object):
     def get_all(self):
         obs_tm1, obs_t, a_tm1, r_t, dones_t, log_likes_t = zip(*self.buffer)
         
-        obs_tm1 = torch.tensor(np.concatenate(obs_tm1, axis=0)).float()
-        a_tm1 = torch.tensor(np.concatenate(a_tm1, axis=0).reshape(-1)).float()  # Flattening directly
-        r_t = torch.tensor(np.concatenate(r_t, axis=0).reshape(-1)).float()  # Flattening directly
-        obs_t = torch.tensor(np.concatenate(obs_t, axis=0)).float()
-        dones_t = torch.tensor(np.concatenate(dones_t, axis=0).reshape(-1)).float()  # Flattening directly
-        log_likes_t = (torch.cat(log_likes_t, axis=0).reshape(-1)).float()  # Flattening directly
+        obs_tm1 = torch.tensor(np.concatenate(obs_tm1, axis=0), device=self.device).float()
+        a_tm1 = torch.tensor(np.concatenate(a_tm1, axis=0).reshape(-1), device=self.device).float()  # Flattening directly
+        r_t = torch.tensor(np.concatenate(r_t, axis=0).reshape(-1), device=self.device).float()  # Flattening directly
+        obs_t = torch.tensor(np.concatenate(obs_t, axis=0), device=self.device).float()
+        dones_t = torch.tensor(np.concatenate(dones_t, axis=0).reshape(-1), device=self.device).float()  # Flattening directly
+        log_likes_t = (torch.cat(log_likes_t, axis=0).reshape(-1)).float().to(self.device)  # Flattening directly
         
         return obs_tm1, obs_t, a_tm1, r_t, dones_t, log_likes_t
 

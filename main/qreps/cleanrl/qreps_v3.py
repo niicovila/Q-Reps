@@ -35,13 +35,13 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = True
+    track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "QREPS_LunarLander-v2"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
-    capture_video: bool = True
+    capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     save_model: bool = False
@@ -54,9 +54,9 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "LunarLander-v2"
     """the id of the environment"""
-    total_timesteps: int = 1000
+    total_timesteps: int = 500
     """total timesteps of the experiments"""
-    num_updates: int = 30
+    num_updates: int = 20
     """the number of updates"""
     num_rollouts: int = 5
     """the number of rollouts before each update"""
@@ -303,7 +303,7 @@ def main(args):
     if args.eta is None: eta = args.alpha
     else: eta = args.eta
 
-    rb = ReplayBuffer(args.buffer_size)
+    rb = ReplayBuffer(args.buffer_size, device)
     start_time = time.time()
 
     # TRY NOT TO MODIFY: start the game
@@ -322,7 +322,7 @@ def main(args):
                 global_step += args.num_envs
                 with torch.no_grad():
                     actions, _, loglikes, probs = actor.get_action(torch.Tensor(obs).to(device))
-                action = actions.numpy()
+                action = actions.detach().cpu().numpy()
 
                 # TRY NOT TO MODIFY: execute the game and log data.
                 next_obs, reward, done, truncation, info = envs.step(action)
