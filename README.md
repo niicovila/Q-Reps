@@ -17,7 +17,9 @@ https://github.com/niicovila/Q-Reps/assets/76247144/4faa3bb3-72bb-4efd-b046-dd61
 ![Reference Image](dev/assets/img/lunar_lander.png)
 
 
-https://github.com/niicovila/Q-Reps/assets/76247144/5c5d5612-cb05-484c-9802-089573d66547
+
+https://github.com/niicovila/Q-Reps/assets/76247144/9d9dafac-3cb7-447f-8b2c-9820b5701f5a
+
 
 
 ### XPPO
