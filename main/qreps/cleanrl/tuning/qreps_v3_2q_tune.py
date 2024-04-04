@@ -8,6 +8,24 @@ import torch
 import torch.nn as nn
 from replay_buffer import ReplayBuffer
 
+# docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/dqn/#dqnpy
+import itertools
+import os
+import random
+import time
+from dataclasses import dataclass
+
+import gymnasium as gym
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import tyro
+from replay_buffer import ReplayBuffer
+from torch.utils.tensorboard import SummaryWriter
+from torch.distributions import Categorical
 
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
@@ -31,7 +49,7 @@ config = {
   "wandb_entity": 'TFG',
   "capture_video": False,
   "env_id": "CartPole-v1",
-  "total_timesteps": 128,
+  "total_timesteps": 500,
   "num_updates": 30,
   "buffer_size": 10000,
   "update_epochs": tune.choice([5, 50, 100, 300]),
@@ -46,7 +64,7 @@ config = {
   "alpha":  tune.choice([0.2, 0.5, 2, 4, 6]),
   "eta": None,
   "beta": tune.choice([0.1, 0.01, 0.002, 4e-5]),
-  "autotune":  tune.choice([True, False]),
+  "autotune":  True,
   "target_entropy_scale": tune.choice([0.2, 0.35, 0.5, 0.89]),
   "use_linear_schedule":  tune.choice([True, False]),
   "saddle_point_optimization":  tune.choice([True, False]),
@@ -61,24 +79,6 @@ FORMAT = "[%(asctime)s]: %(message)s"
 logging.basicConfig(level=logging.INFO, format=FORMAT)
 SEED_OFFSET = 0
 
-# docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/dqn/#dqnpy
-import itertools
-import os
-import random
-import time
-from dataclasses import dataclass
-
-import gymnasium as gym
-import numpy as np
-import pandas as pd
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-import tyro
-from replay_buffer import ReplayBuffer
-from torch.utils.tensorboard import SummaryWriter
-from torch.distributions import Categorical
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
@@ -86,83 +86,6 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     return layer
 
 Q_HIST = []
-@dataclass
-class Args:
-    exp_name: str = os.path.basename(__file__)[: -len(".py")]
-    """the name of this experiment"""
-    seed: int = 1
-    """seed of the experiment"""
-    run_multiple_seeds: bool = False
-    """if toggled, this script will run with multiple seeds"""
-    torch_deterministic: bool = True
-    """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    cuda: bool = True
-    """if toggled, cuda will be enabled by default"""
-    track: bool = False
-    """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "QREPS_LunarLander-v2"
-    """the wandb's project name"""
-    wandb_entity: str = None
-    """the entity (team) of wandb's project"""
-    capture_video: bool = False
-    """whether to capture videos of the agent performances (check out `videos` folder)"""
-
-    save_model: bool = False
-    """whether to save model into the `runs/{run_name}` folder"""
-    upload_model: bool = False
-    """whether to upload the saved model to huggingface"""
-    hf_entity: str = ""
-    """the user or org name of the model repository from the Hugging Face Hub"""
-
-    # Algorithm specific arguments
-    env_id: str = "CartPole-v1"
-    """the id of the environment"""
-    total_timesteps: int = 500
-    """total timesteps of the experiments"""
-    num_updates: int = 100
-    """the number of updates"""
-    num_rollouts: int = 5
-    """the number of rollouts before each update"""
-    num_envs: int = 1
-    """the number of parallel game environments"""
-    buffer_size: int = int(1e4)
-    """the replay memory buffer size"""
-    gamma: float = 0.99
-    """the discount factor gamma"""
-    policy_lr_start: float = 0.0025
-    """the learning rate of the policy network optimizer"""
-    policy_lr_end: float = 0.00001
-    """the last learning rate of the policy network optimizer"""
-    q_lr_start: float = 0.001
-    """the learning rate of the Q network network optimizer"""
-    q_lr_end: float = 0.00100
-    """the last learning rate of the Q network network optimizer"""
-    alpha: float = 2.0
-    """Entropy regularization coefficient."""
-    eta = None
-    """coefficient for the kl reg"""
-    update_epochs: int = 5
-    """the number of epochs for the policy and value networks"""
-    update_policy_epochs: int = 5
-    """the number of epochs for the policy network"""
-    beta: float = 0.01
-    """the sampler step size"""
-    autotune: bool =  True
-    """automatic tuning of the entropy coefficient"""
-    q_histogram: bool = False
-    """if toggled, the q function histogram will be plotted"""
-    target_entropy_scale: float = 0.5
-    """coefficient for scaling the autotune entropy target"""
-    use_linear_schedule: bool = True
-    """if toggled, the learning rate will decrease linearly"""
-    saddle_point_optimization: bool = True
-    """if toggled, the saddle point optimization will be used"""
-    use_kl_loss: bool = True
-    """if toggled, the kl loss will be used"""
-    target_network_frequency: int = 5
-    """the frequency of updating the target networks"""
-    tau: float = 1.0
-    """the soft update coefficient for the target networks"""
 
 def make_env(env_id, seed, idx, capture_video, run_name):
     def thunk():
@@ -339,11 +262,17 @@ class QREPSPolicy(nn.Module):
         action_log_prob = policy_dist.log_prob(action)
         return action, action_log_prob, log_prob, action_probs
 
-def main(args):
+def main(config):
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
     import stable_baselines3 as sb3
 
     # assert args.num_envs == 1, "vectorized envs are not supported at the moment"
+    args = argparse.Namespace(**config)
+    args.seed = config["__trial_index__"] + SEED_OFFSET
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    logging_callback=lambda r: train.report({'reward':r})
     if args.track:
         import wandb
 
@@ -407,79 +336,80 @@ def main(args):
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
+    #try:
 
     for T in range(args.num_updates):
-        all_rewards = []
-        if args.use_linear_schedule:
-            q_optimizer.param_groups[0]["lr"] = linear_schedule(start_e= args.q_lr_start, end_e=args.q_lr_end, duration=100, t=T)
-            actor_optimizer.param_groups[0]["lr"] = linear_schedule(start_e= args.policy_lr_start, end_e=args.policy_lr_end, duration=100, t=T)
+            all_rewards = []
+            if args.use_linear_schedule:
+                q_optimizer.param_groups[0]["lr"] = linear_schedule(start_e= args.q_lr_start, end_e=args.q_lr_end, duration=100, t=T)
+                actor_optimizer.param_groups[0]["lr"] = linear_schedule(start_e= args.policy_lr_start, end_e=args.policy_lr_end, duration=100, t=T)
 
-        for N in range(args.num_rollouts):
-            obs, _ = envs.reset(seed=args.seed)
-            episode_reward = []
-            for step in range(args.total_timesteps):
-                global_step += args.num_envs
-                with torch.no_grad():
-                    actions, _, loglikes, probs = actor.get_action(torch.Tensor(obs).to(device))
-                action = actions.detach().cpu().numpy()
+            for N in range(args.num_rollouts):
+                obs, _ = envs.reset(seed=args.seed)
+                episode_reward = []
+                for step in range(args.total_timesteps):
+                    global_step += args.num_envs
+                    with torch.no_grad():
+                        actions, _, loglikes, probs = actor.get_action(torch.Tensor(obs).to(device))
+                    
+                    # TRY NOT TO MODIFY: execute the game and log data.
+                    next_obs, reward, done, truncation, info = envs.step(actions.detach().cpu().numpy())
+                    reward, obs, next_obs, done = torch.tensor(reward).to(device).view(-1), torch.Tensor(obs).to(device), torch.Tensor(next_obs).to(device), torch.Tensor(done).to(device)
 
-                # TRY NOT TO MODIFY: execute the game and log data.
-                next_obs, reward, done, truncation, info = envs.step(action)
-                rb.push(obs, next_obs, action, reward, done, loglikes)
-                obs = next_obs
-                all_rewards.append(reward)
-                episode_reward.append(reward)
-                if done.any():
-                    # print("Step:", global_step, "reward:", np.sum(episode_reward)/(args.num_envs))
-                    # writer.add_scalar("charts/episodic_return", np.sum(episode_reward)/(args.num_envs), global_step)
-                    break
+                    rb.push(obs, next_obs, actions, reward, done, loglikes)
+                    obs = next_obs
+                    all_rewards.append(reward)
+                    episode_reward.append(reward)
+                    if done.any():
+                        break
 
-        # TRAINING PHASE         
-        (
-        observations, 
-        next_observations, 
-        actions, 
-        rewards, 
-        dones, 
-        log_likes
-        ) = rb.get_all()
+            # TRAINING PHASE         
+            (
+            observations, 
+            next_observations, 
+            actions, 
+            rewards, 
+            dones, 
+            log_likes
+            ) = rb.get_all()
 
-        q_nets = [qf, qf2, qf_target, qf2_target]
-        if args.saddle_point_optimization:
-            sampler = ExponentiatedGradientSampler(observations.shape[0], device, eta, beta=args.beta)
-            optimize_critic(eta, observations, next_observations, actions, rewards, q_nets, actor, args.gamma, sampler, q_optimizer, steps=args.update_epochs, loss_fn=saddle)
-        else:
-            optimize_critic(eta, observations, next_observations, actions, rewards, q_nets, actor, args.gamma, None, q_optimizer, steps=args.update_epochs, loss_fn=ELBE)
+            q_nets = [qf, qf2, qf_target, qf2_target]
+            if args.saddle_point_optimization:
+                sampler = ExponentiatedGradientSampler(observations.shape[0], device, eta, beta=args.beta)
+                optimize_critic(eta, observations, next_observations, actions, rewards, q_nets, actor, args.gamma, sampler, q_optimizer, steps=args.update_epochs, loss_fn=saddle)
+            else:
+                optimize_critic(eta, observations, next_observations, actions, rewards, q_nets, actor, args.gamma, None, q_optimizer, steps=args.update_epochs, loss_fn=ELBE)
 
-        if args.use_kl_loss: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, q_nets, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=kl_loss)
-        else: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, q_nets, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=nll_loss)
-        
-        print("Step:", T, "reward:", np.sum(all_rewards)/(args.num_rollouts*args.num_envs))
-        writer.add_scalar("charts/episodic_return", np.sum(all_rewards)/(args.num_envs*args.num_rollouts), T)
-        
-        rb.reset()
-        if args.autotune:
-            actions, a_loglike, loglikes, probs = actor.get_action(torch.Tensor(obs).to(device))
+            if args.use_kl_loss: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, q_nets, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=kl_loss)
+            else: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, q_nets, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=nll_loss)
             
-            # re-use action probabilities for temperature loss
-            alpha_loss = (probs.detach() * (-log_alpha.exp() * (loglikes + target_entropy).detach())).mean()
+            # print("Step:", T, "reward:", np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs))
+            writer.add_scalar("charts/episodic_return", np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs), T)
+            logging_callback(np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs))
 
-            a_optimizer.zero_grad()
-            alpha_loss.backward()
-            a_optimizer.step()
-            alpha = log_alpha.exp().item()
-            # qf.alpha = alpha
-        
-        # update the target networks
-        if T % args.target_network_frequency == 0:
-            for param, target_param in zip(qf.parameters(), qf_target.parameters()):
-                target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-            for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
-                target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+            rb.reset()
+            if args.autotune:
+                actions, a_loglike, loglikes, probs = actor.get_action(torch.Tensor(obs).to(device))
+                
+                # re-use action probabilities for temperature loss
+                alpha_loss = (probs.detach() * (-log_alpha.exp() * (loglikes + target_entropy).detach())).mean()
+
+                a_optimizer.zero_grad()
+                alpha_loss.backward()
+                a_optimizer.step()
+                alpha = log_alpha.exp().item()
+            
+            # update the target networks
+            if T % args.target_network_frequency == 0:
+                for param, target_param in zip(qf.parameters(), qf_target.parameters()):
+                    target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+                for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
+                    target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+    # except:
+    #     logging_callback(0.0)
 
     envs.close()
     writer.close()
-    return np.sum(all_rewards)/(args.num_rollouts*args.num_envs)
 
 ray_init_config = {
     "num_gpus": 1,  # Adjust based on the number of available GPUs
@@ -504,4 +434,4 @@ print("Best config: ", analysis.get_best_config(metric="reward", mode="max"))
 # Get a dataframe for analyzing trial results.
 df = analysis.results_df
 
-df.to_csv("tuning_no_grad.csv")
+df.to_csv("tuning_2q.csv")

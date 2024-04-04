@@ -65,9 +65,6 @@ qreps_config = {
     "capture_video": False,
 }
  
-## seed 4: "eta": 0.204177551020,  "beta": 0.001 QREPS
-
-
 def train(config: dict):
     config = argparse.Namespace(**config)
     run_name = f"{config.env_id}__{config.exp_name}__{config.seed}__{int(time.time())}"
@@ -93,10 +90,6 @@ def train(config: dict):
     num_obs = env.observation_space.shape[0]
     num_act = env.action_space.n
 
-    # q_function = NNQFunction(obs_dim=num_obs, act_dim=num_act, feature_fn=IdentityFeature()).to(device)
-    # policy = CategoricalMLP(num_obs, num_act).to(device)
-    # policy = QREPSPolicy(q_function, temp=config.eta)
-
     q_function = NNQFunction(
         obs_dim=num_obs, act_dim=num_act, feature_fn=IdentityFeature()
     )
@@ -116,17 +109,6 @@ def train(config: dict):
     
     writer = SummaryWriter()
 
-    # agent = SaddleQREPS(
-    #     writer=writer,
-    #     policy=policy,
-    #     q_function=q_function,
-    #     optimize_policy=True,
-    #     policy_lr=0.02,
-    #     sampler=ExponentiatedGradientSampler,
-    #     reward_transformer=lambda r: r / 5,
-    #     device = device,
-    #     **vars(config))
-
     trainer = Trainer(config.seed)
     trainer.setup(agent, env)
     reward = trainer.train(num_iterations=30, max_steps=200, number_rollouts=5)
@@ -135,31 +117,3 @@ def train(config: dict):
     return reward
 
 train(qreps_config)
-
-# alphas = [0.002, 0.005, 0.01, 0.05, 0.1 , 0.2]
-# etas = [0.002, 0.005, 0.01, 0.05, 0.1 , 0.2]
-# learning_rates = [0.1, 1e-2, 1e-3, 1e-4]
-
-# results = []
-
-# for alpha, learning_rate, eta in itertools.product(alphas, learning_rates, etas):
-#     qreps_config["eta"] = eta
-#     qreps_config["alpha"] = alpha
-#     qreps_config["beta"] = learning_rate
-
-#     try: 
-#         print(f"Training with alpha: {alpha}, learning_rate: {learning_rate}, eta: {eta}")
-#         reward = train(qreps_config)
-#         results.append((alpha, learning_rate, eta, reward))
-#     except:
-#         pass
-
-# best_combination = max(results, key=lambda x: x[3])
-# print("Best Combination:")
-# print("Alpha:", best_combination[0])
-# print("Learning Rate:", best_combination[1])
-# print("Eta:", best_combination[2])
-# print("Reward:", best_combination[3])
-
-# df = pd.DataFrame(results, columns=["Alpha", "Learning Rate", "Eta", "Reward"])
-# df.to_csv("results_saddle.csv", index=False)

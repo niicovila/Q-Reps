@@ -96,6 +96,8 @@ class Args:
     """if toggled, the saddle point optimization will be used"""
     use_kl_loss: bool = True
     """if toggled, the kl loss will be used"""
+    max_grad_norm: float = None
+    """the maximum norm of the gradient"""
 
 def make_env(env_id, seed, idx, capture_video, run_name):
     def thunk():
@@ -171,26 +173,29 @@ def nll_loss(alpha, observations, next_observations, rewards, actions, log_likes
 def kl_loss(alpha, observations, next_observations, rewards, actions, log_likes, q_net, policy):
     _, _, newlogprob, probs = policy.get_action(observations, actions)
     q_values = q_net.get_values(observations, policy=policy)[0]
-    actor_loss = torch.mean(probs * (alpha * (newlogprob-log_likes) - q_values.detach()))
+    actor_loss = torch.mean(probs * (alpha * (newlogprob-log_likes.detach()) - q_values.detach()))
     return actor_loss
 
-def optimize_critic(eta, observations, next_observations, actions, rewards, q_net, policy, gamma, sampler, optimizer, steps=300, loss_fn=ELBE):
+def optimize_critic(eta, observations, next_observations, actions, rewards, q_net, policy, gamma, sampler, optimizer, steps=300, loss_fn=ELBE, max_grad_norm=None):
     def closure():
         optimizer.zero_grad()
         loss = loss_fn(eta, observations, next_observations, actions, rewards, q_net , policy, gamma, sampler)
         loss.backward()
         if sampler is not None: sampler.update(empirical_bellman_error(observations, next_observations, actions, rewards, q_net, policy, gamma))
-        # nn.utils.clip_grad_norm_([param for group in optimizer.param_groups for param in group['params']], 1.0)
+        if max_grad_norm is not None: nn.utils.clip_grad_norm_([param for group in optimizer.param_groups for param in group['params']], max_grad_norm)
         return loss
 
     for i in range(steps):
         optimizer.step(closure)
 
-def optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, q_net, policy, optimizer, steps=300, loss_fn=nll_loss):
+def optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, q_net, policy, optimizer, steps=300, loss_fn=nll_loss, max_grad_norm=None):
     def closure():
         optimizer.zero_grad()
         loss = loss_fn(alpha, observations, next_observations, rewards, actions, log_likes, q_net, policy)
         loss.backward()
+
+        if max_grad_norm is not None: nn.utils.clip_grad_norm_([param for group in optimizer.param_groups for param in group['params']], max_grad_norm)
+
         return loss
 
     for i in range(steps):
@@ -318,7 +323,7 @@ def main(args):
 
         for N in range(args.num_rollouts):
 
-            obs, _ = envs.reset(seed=args.seed)
+            obs, _ = envs.reset(seed=args.seed + np.random.randint(0, 1000))
             episode_reward = []
             
             for step in range(args.total_timesteps):
@@ -327,14 +332,21 @@ def main(args):
                     actions, _, loglikes, probs = actor.get_action(torch.Tensor(obs).to(device))
 
                 # TRY NOT TO MODIFY: execute the game and log data.
-                next_obs, reward, done, truncation, info = envs.step(actions.detach().cpu().numpy())
+                next_obs, reward, done, truncation, infos = envs.step(actions.detach().cpu().numpy())
 
                 reward, obs, next_obs, done = torch.tensor(reward).to(device).view(-1), torch.Tensor(obs).to(device), torch.Tensor(next_obs).to(device), torch.Tensor(done).to(device)
-
                 rb.push(obs, next_obs, actions, reward, done, loglikes)
+                
                 obs = next_obs
                 all_rewards.append(reward)
                 episode_reward.append(reward)
+                if "final_info" in infos:
+                    for info in infos["final_info"]:
+                        if info and "episode" in info:
+                            print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
+                            writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
+                            writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                            break
                 if done.any():
                     break
 
@@ -350,11 +362,11 @@ def main(args):
 
         if args.saddle_point_optimization:
             sampler = ExponentiatedGradientSampler(observations.shape[0], device, eta, beta=args.beta)
-            optimize_critic(eta, observations, next_observations, actions, rewards, qf, actor, args.gamma, sampler, q_optimizer, steps=args.update_epochs, loss_fn=saddle)
-        else: optimize_critic(eta, observations, next_observations, actions, rewards, qf, actor, args.gamma, None, q_optimizer, steps=args.update_epochs, loss_fn=ELBE)
+            optimize_critic(eta, observations, next_observations, actions, rewards, qf, actor, args.gamma, sampler, q_optimizer, steps=args.update_epochs, loss_fn=saddle, max_grad_norm=args.max_grad_norm)
+        else: optimize_critic(eta, observations, next_observations, actions, rewards, qf, actor, args.gamma, None, q_optimizer, steps=args.update_epochs, loss_fn=ELBE, max_grad_norm=args.max_grad_norm)
 
-        if args.use_kl_loss: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, qf, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=kl_loss)
-        else: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, qf, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=nll_loss)
+        if args.use_kl_loss: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, qf, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=kl_loss, max_grad_norm=args.max_grad_norm)
+        else: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, qf, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=nll_loss, max_grad_norm=args.max_grad_norm)
         
         print("Step:", T, "reward:", np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs))
         writer.add_scalar("charts/episodic_return", np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs), T)
@@ -373,7 +385,7 @@ def main(args):
 
     envs.close()
     writer.close()
-    return np.sum(all_rewards)/(args.num_rollouts*args.num_envs)
+    return np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs)
 
 # ### HP SEARCH
 args = tyro.cli(Args)

@@ -304,48 +304,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                   values = torch.log(torch.sum(next_state_action_probs * torch.exp(torch.min(qf1_values, qf2_values) / beta), dim=-1))
                 qf1_a_values = qf1_values.gather(1, data.actions.long()).view(-1)
                 qf2_a_values = qf2_values.gather(1, data.actions.long()).view(-1)
-                # qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
-                # qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
-                
-                def gumbel_rescale_loss(pred, label, beta, clip=10):
-                    assert pred.shape == label.shape, "Shapes were incorrect"
-                    z = (label - pred)/beta
-                    if clip is not None:
-                        z = torch.clamp(z, -clip, clip)
-                    max_z = torch.max(z)
-                    max_z = torch.where(max_z < -1.0, torch.tensor(-1.0, dtype=torch.float, device=max_z.device), max_z)
-                    max_z = max_z.detach() # Detach the gradients
-                    loss = torch.exp(z - max_z) - z*torch.exp(-max_z) - torch.exp(-max_z)    
-                    return loss.mean()
-                
-                def gumbel_loss(pred, label, beta, clip):
-                    assert pred.shape == label.shape, "Shapes were incorrect"
-                    z = (label - pred)/beta
-                    if clip is not None:
-                        z = torch.clamp(z, -clip, clip)
-                    loss = torch.exp(z) - z - 1
-                    return loss.mean()
-
-                def s_k(sampler, delta, eta, values, gamma=0.99):
-                    term = delta - (beta)*torch.log(sampler.shape[0] * sampler)
-                    loss = torch.sum(sampler*term)
-                    loss += (1-gamma)*values.mean()
-                    return loss
-
-                def elbe_loss(delta, values, beta, clip=None):
-                    z = (delta)/beta
-                    if clip is not None:
-                        z = torch.clamp(z, -clip, clip)
-                    loss =  torch.exp(z)
-                    loss_v2 = (1 - 0.99) * values.mean()
-                    return beta * torch.log(loss.mean()) + loss_v2
-
-                sampler = (torch.ones((args.batch_size)) / args.batch_size).to(device)
-                delta_1 = next_q_value - qf1_a_values
-                delta_2 = next_q_value - qf2_a_values
-                
-                qf1_loss = gumbel_rescale_loss(qf1_a_values, next_q_value, beta)
-                qf2_loss = gumbel_rescale_loss(qf2_a_values, next_q_value, beta)
+                qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
+                qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
       
                 qf_loss = qf1_loss + qf2_loss
 

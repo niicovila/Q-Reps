@@ -1,9 +1,15 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/sac/#sac_ataripy
+import argparse
 import os
 import random
 import time
 from dataclasses import dataclass
-
+from torch.distributions.categorical import Categorical
+from torch.utils.tensorboard import SummaryWriter
+from ray import train
+from ray.tune.search import Repeater
+from ray.tune.search.hebo import HEBOSearch
+import ray.tune as tune  # Import the missing package
 import gymnasium as gym
 import numpy as np
 import torch
@@ -27,72 +33,45 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     return layer
 
 
-@dataclass
-class Args:
-    exp_name: str = os.path.basename(__file__)[: -len(".py")]
-    """the name of this experiment"""
-    seed: int = 1
-    """seed of the experiment"""
-    torch_deterministic: bool = True
-    """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    cuda: bool = True
-    """if toggled, cuda will be enabled by default"""
-    track: bool = False
-    """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "cleanRL"
-    """the wandb's project name"""
-    wandb_entity: str = None
-    """the entity (team) of wandb's project"""
-    capture_video: bool = False
-    """whether to capture videos of the agent performances (check out `videos` folder)"""
+config = {
+    "exp_name": "QREPS",
+    "seed": 1,
+    "torch_deterministic": True,
+    "cuda": True,
+    "track": False,
+    "wandb_project_name": "QREPS_CartPole-v1",
+    "wandb_entity": 'TFG',
+    "capture_video": False,
+    "env_id": "BeamRiderNoFrameskip-v4",
+    "total_timesteps": 5000000,
+    "buffer_size": 10000,
+    "batch_size": 64,
+    "learning_starts": 2000,
+    "update_frequency": 4,
 
-    # Algorithm specific arguments
-    env_id: str = "BeamRiderNoFrameskip-v4"
-    """the id of the environment"""
-    total_timesteps: int = 5000000
-    """total timesteps of the experiments"""
-    buffer_size: int = int(1e6)
-    """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
-    gamma: float = 0.99
-    """the discount factor gamma"""
-    tau: float = 1.0
-    """target smoothing coefficient (default: 1)"""
-    batch_size: int = 64
-    """the batch size of sample from the reply memory"""
-    learning_starts: int = 2e4
-    """timestep to start learning"""
-    policy_lr: float = 3e-4
-    """the learning rate of the policy network optimizer"""
-    q_lr: float = 3e-4
-    """the learning rate of the Q network network optimizer"""
-    update_frequency: int = 4
-    """the frequency of training updates"""
-    target_network_frequency: int = 8000
-    """the frequency of updates for the target networks"""
-    alpha: float = 0.2
-    """Entropy regularization coefficient."""
-    eta: float = None
-    """KL regularization coefficient."""
-    autotune: bool = True
-    """automatic tuning of the entropy coefficient"""
-    target_entropy_scale: float = 0.89
-    """coefficient for scaling the autotune entropy target"""
-    alpha: float = 2.0
-    """Entropy regularization coefficient."""
-    eta: float = None
-    """KL regularization coefficient."""
-    saddle_point_optimization: bool = False
-    """whether to use saddle point optimization"""
-    update_epochs: int = 10
-    """number of epochs for the saddle point optimization"""
-    update_policy_epochs: int = 10
-    """number of epochs for the policy optimization"""
-    beta: float = 0.01
-    """coefficient for the saddle point optimization"""
-    use_kl_loss: bool = True
-    """whether to use KL loss for the policy optimization"""
+    "update_epochs": tune.choice([5, 50, 100, 300]),
+    "update_policy_epochs": tune.choice([50, 300, 450]),
+    "num_rollouts": tune.choice([2, 5, 8]),
+    "num_envs": tune.choice([1, 4, 6]),
+    "gamma": 0.99,
+    "policy_lr": tune.choice([0.1, 2e-2, 2.5e-3]),
+    "q_lr": tune.choice([0.1, 2e-2, 2.5e-3]),
+    "alpha":  tune.choice([0.2, 0.5, 2, 4, 6]),
+    "eta": None,
+    "beta": tune.choice([0.1, 0.01, 0.002, 4e-5]),
+    "autotune":  True,
+    "target_entropy_scale": tune.choice([0.2, 0.35, 0.5, 0.89]),
+    "use_linear_schedule":  tune.choice([True, False]),
+    "saddle_point_optimization":  tune.choice([True, False]),
+    "use_kl_loss": tune.choice([True, False]),
+    "target_network_frequency": tune.choice([2, 4, 8, 16]),
+    "tau": 1.0,
+}
 
-
+import logging
+FORMAT = "[%(asctime)s]: %(message)s"
+logging.basicConfig(level=logging.INFO, format=FORMAT)
+SEED_OFFSET = 0
 def make_env(env_id, seed, idx, capture_video, run_name):
     def thunk():
         if capture_video and idx == 0:
@@ -306,17 +285,18 @@ class QREPSPolicy(nn.Module):
         return action, action_log_prob, log_prob, action_probs
 
 
-if __name__ == "__main__":
+def main(config):
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
     import stable_baselines3 as sb3
 
-    if sb3.__version__ < "2.0":
-        raise ValueError(
-            """Ongoing migration: run the following command to install the new dependencies:
-
-poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-license]==0.28.1"  "ale-py==0.8.1" 
-"""
-        )
-    args = tyro.cli(Args)
+    # assert args.num_envs == 1, "vectorized envs are not supported at the moment"
+    args = argparse.Namespace(**config)
+    args.seed = config["__trial_index__"] + SEED_OFFSET
+    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    logging_callback=lambda r: train.report({'reward':r})
+    
     if args.eta is None: args.eta = args.alpha
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     if args.track:
@@ -385,7 +365,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
-    for global_step in range(args.total_timesteps):
+    try:
+     for global_step in range(args.total_timesteps):
         # ALGO LOGIC: put action logic here
         if global_step < args.learning_starts:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
@@ -404,6 +385,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     continue
                 print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                 writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
+                logging_callback(info["episode"]["r"])
                 writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                 break
 
@@ -464,6 +446,33 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
                 if args.autotune:
                     writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
-
+    except:
+        logging_callback(0.0)
     envs.close()
     writer.close()
+
+
+ray_init_config = {
+    "num_gpus": 1,  # Adjust based on the number of available GPUs
+    "num_cpus": 4,  # Number of CPU cores to allocate per trial
+    # Additional Ray initialization options if needed
+}
+
+search_alg = HEBOSearch(metric="reward", mode="max")
+re_search_alg = Repeater(search_alg, repeat=5)
+
+analysis = tune.run(
+    main,
+    num_samples=200,
+    config=config,
+    search_alg=re_search_alg,
+    # resources_per_trial=ray_init_config,
+    local_dir="/Users/nicolasvila/workplace/uni/tfg_v2/tests/qreps/results_tune_qreps_v3",
+)
+
+print("Best config: ", analysis.get_best_config(metric="reward", mode="max"))
+
+# Get a dataframe for analyzing trial results.
+df = analysis.results_df
+
+df.to_csv("tuning_atari_v1.csv")
