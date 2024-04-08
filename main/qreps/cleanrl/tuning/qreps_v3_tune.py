@@ -269,7 +269,7 @@ def main(config: dict):
     else: eta = args.eta
 
     rb = ReplayBuffer(args.buffer_size)
-    start_time = time.time()
+
 
     # TRY NOT TO MODIFY: start the game
     
@@ -350,6 +350,7 @@ ray_init_config = {
 search_alg = HEBOSearch(metric="reward", mode="max")
 re_search_alg = Repeater(search_alg, repeat=5)
 
+start_time = time.time()
 analysis = tune.run(
     main,
     num_samples=20,
@@ -360,7 +361,7 @@ analysis = tune.run(
 )
 
 print("Best config: ", analysis.get_best_config(metric="reward", mode="max"))
-
+print("Time taken: ", time.time() - start_time)
 # Get a dataframe for analyzing trial results.
 df = analysis.results_df
 

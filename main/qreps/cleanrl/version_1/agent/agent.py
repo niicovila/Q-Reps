@@ -34,8 +34,6 @@ class Agent(nn.Module):
         q = self.critic(x)
         z = q / self.alpha
         _, _, _, pi_k = self.get_action(x)
-        # max_z = torch.max(z, dim=-1, keepdim=True)[0]
-        # max_z = torch.where(max_z < -1.0, torch.tensor(-1.0, dtype=torch.float, device=max_z.device), max_z)
         v = self.alpha * (torch.log(torch.sum(pi_k * torch.exp(z), dim=1)))
         return q, v
 

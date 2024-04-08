@@ -58,9 +58,9 @@ class Args:
     """the discount factor gamma"""
     num_minibatches: int = 4
     """the number of mini-batches"""
-    update_epochs: int = 300
+    update_epochs: int = 50
     """the K epochs to update the policy"""
-    update_policy_epochs: int = 300
+    update_policy_epochs: int = 50
     """the K epochs to update the policy"""
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
@@ -76,10 +76,12 @@ class Args:
     """if toggled, will use nll for policy optimization"""
     sampler = ExponentiatedGradientSampler
     """the sampler to use for the optimization -either ExponentiatedGradientSampler or BestResponseSampler-"""
-    average_critics: bool = False
+    average_critics: bool = True
     """if toggled, will average the critics after each iteration"""
     exp_clip: float = 8.0
     """the clipping value for the exps"""
+    mse_loss: bool = False
+    """if toggled, will use mse loss for the critic"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -100,6 +102,31 @@ def make_env(env_id, idx, capture_video, run_name):
         return env
 
     return thunk
+
+def empirical_bellman_error(observations, next_observations, actions, rewards, qf, policy, gamma):
+    v_target = qf.get_values(next_observations, actions, policy)[1]
+    q_features = qf.get_values(observations, actions, policy)[0]
+    output = rewards + gamma * v_target - q_features
+    return output
+
+def ELBE(eta, observations, next_observations, actions, rewards, qf, policy, gamma, sampler=None):
+    errors = eta * torch.logsumexp(
+        empirical_bellman_error(observations, next_observations, actions, rewards, qf, policy, gamma) / eta, 0
+    ) + torch.mean((1 - gamma) * qf.get_values(observations, actions, policy)[1], 0)
+    return errors
+
+
+def optimize_critic(eta, observations, next_observations, actions, rewards, q_net, policy, gamma, sampler, optimizer, steps=300, loss_fn=ELBE, max_grad_norm=None):
+    def closure():
+        optimizer.zero_grad()
+        loss = loss_fn(eta, observations, next_observations, actions, rewards, q_net , policy, gamma, sampler)
+        loss.backward()
+        if sampler is not None: sampler.update(empirical_bellman_error(observations, next_observations, actions, rewards, q_net, policy, gamma))
+        if max_grad_norm is not None: nn.utils.clip_grad_norm_([param for group in optimizer.param_groups for param in group['params']], max_grad_norm)
+        return loss
+
+    for i in range(steps):
+        optimizer.step(closure)
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -140,11 +167,11 @@ if __name__ == "__main__":
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     agent = Agent(envs, args).to(device)
-    critic_optimizer = optim.SGD(agent.critic.parameters(), lr=args.learning_rate)
-    actor_optimizer = optim.SGD(agent.actor.parameters(), lr=args.policy_lr)
+    
+    critic_optimizer = optim.Adam(agent.critic.parameters(), lr=args.learning_rate, eps=1e-5)
+    actor_optimizer = optim.Adam(agent.actor.parameters(), lr=args.policy_lr, eps=1e-5)
+    
     alpha = torch.Tensor([args.alpha]).to(device)
-    eta = torch.Tensor([args.eta]).to(device)
-    sampler = args.sampler(args.minibatch_size, device, eta=eta)
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -156,6 +183,8 @@ if __name__ == "__main__":
     qs = torch.zeros((args.num_steps, args.num_envs, envs.single_action_space.n)).to(device)
     if args.eta is None: eta = args.alpha
     else: eta = torch.Tensor([args.eta]).to(device)
+    sampler = args.sampler(args.minibatch_size, device, eta=eta)
+    
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
@@ -203,18 +232,18 @@ if __name__ == "__main__":
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
         
         # bootstrap value if not done
-        with torch.no_grad():
-            q, next_value = agent.get_value(next_obs)
-            next_value = next_value.reshape(1, -1)
-            returns = torch.zeros_like(rewards).to(device)
-            for t in reversed(range(args.num_steps)):
-                if t == args.num_steps - 1:
-                    nextnonterminal = 1.0 - next_done
-                    nextvalues = next_value
-                else:
-                    nextnonterminal = 1.0 - dones[t + 1]
-                    nextvalues = values[t + 1]
-                returns[t] = rewards[t] + args.gamma * nextvalues * nextnonterminal
+        # with torch.no_grad():
+        q, next_value = agent.get_value(next_obs)
+        next_value = next_value.reshape(1, -1)
+        returns = torch.zeros_like(rewards).to(device)
+        for t in reversed(range(args.num_steps)):
+            if t == args.num_steps - 1:
+                nextnonterminal = 1.0 - next_done
+                nextvalues = next_value
+            else:
+                nextnonterminal = 1.0 - dones[t + 1]
+                nextvalues = values[t + 1]
+            returns[t] = rewards[t] + args.gamma * nextvalues * nextnonterminal
             
 
         # flatten the batch
@@ -228,20 +257,28 @@ if __name__ == "__main__":
         b_inds = np.arange(args.batch_size)
         clipfracs = []
         weights_after_each_epoch = []
+
         for epoch in range(args.update_epochs):
             np.random.shuffle(b_inds)
             for start in range(0, args.batch_size, args.minibatch_size):
+                    
                     end = start + args.minibatch_size
                     mb_inds = b_inds[start:end]
+                    
+                    next_observations = b_obs[b_inds[start + 1:end +1]]
+                    optimize_critic(eta, b_obs[mb_inds], next_observations, actions, rewards, agent.critic, agent.actor, args.gamma, None, critic_optimizer, steps=1, loss_fn=ELBE, max_grad_norm=None)
+
+
 
                     newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
                     new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(-1)).squeeze(-1)
 
-                    if args.saddle: loss = S(new_q_a_value, b_returns[mb_inds], sampler, newvalue.detach(), eta, args.gamma)
-                    else: loss = empirical_logistic_bellman(new_q_a_value, b_returns[mb_inds], args.eta, newvalue.detach(), args.gamma, args.exp_clip)
+                    if args.saddle: loss = S(new_q_a_value, b_returns[mb_inds], sampler, newvalue, eta, args.gamma)
+                    elif args.mse_loss: loss = F.mse_loss(new_q_a_value, b_returns[mb_inds])
+                    else: loss = empirical_logistic_bellman(new_q_a_value, b_returns[mb_inds], eta, newvalue, args.gamma, args.exp_clip)
                     
-                    critic_optimizer.zero_grad()
-                    loss.backward()
+                    critic_optimizer.zero_grad(retain_graph=True)
+                    loss.backward(retain_graph=True)
                     critic_optimizer.step()
                     if args.saddle: sampler.update(new_q_a_value.detach(), b_returns[mb_inds])
 

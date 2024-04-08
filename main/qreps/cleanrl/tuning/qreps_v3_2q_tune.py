@@ -48,9 +48,9 @@ config = {
   "wandb_project_name": "QREPS_CartPole-v1",
   "wandb_entity": 'TFG',
   "capture_video": False,
-  "env_id": "CartPole-v1",
+  "env_id": "LunarLander-v2",
   "total_timesteps": 500,
-  "num_updates": 30,
+  "num_updates": 50,
   "buffer_size": 10000,
   "update_epochs": tune.choice([5, 50, 100, 300]),
   "update_policy_epochs": tune.choice([50, 300, 450]),
@@ -59,12 +59,12 @@ config = {
   "gamma": 0.99,
   "policy_lr_start": tune.choice([0.1, 2e-2, 2.5e-3]),
   "q_lr_start": tune.choice([0.1, 2e-2, 2.5e-3]),
-  "q_lr_end":  tune.choice([2.5e-3, 0.0002, 1e-5]),
-  "policy_lr_end":  tune.choice([2.5e-3, 0.0002, 1e-5]),
+  "q_lr_end":  0,
+  "policy_lr_end":  0,
   "alpha":  tune.choice([0.2, 0.5, 2, 4, 6]),
   "eta": None,
   "beta": tune.choice([0.1, 0.01, 0.002, 4e-5]),
-  "autotune":  True,
+  "autotune":  tune.choice([True, False]),
   "target_entropy_scale": tune.choice([0.2, 0.35, 0.5, 0.89]),
   "use_linear_schedule":  tune.choice([True, False]),
   "saddle_point_optimization":  tune.choice([True, False]),
@@ -331,19 +331,27 @@ def main(config):
     if args.eta is None: eta = args.alpha
     else: eta = args.eta
 
-    rb = ReplayBuffer(args.buffer_size, device)
+    rb = ReplayBuffer(args.buffer_size)
     start_time = time.time()
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
-    #try:
+    try:
 
-    for T in range(args.num_updates):
+     for T in range(args.num_updates):
             all_rewards = []
             if args.use_linear_schedule:
-                q_optimizer.param_groups[0]["lr"] = linear_schedule(start_e= args.q_lr_start, end_e=args.q_lr_end, duration=100, t=T)
-                actor_optimizer.param_groups[0]["lr"] = linear_schedule(start_e= args.policy_lr_start, end_e=args.policy_lr_end, duration=100, t=T)
+                # q_optimizer.param_groups[0]["lr"] = linear_schedule(start_e= args.q_lr_start, end_e=args.q_lr_end, duration=100, t=T)
+                # actor_optimizer.param_groups[0]["lr"] = linear_schedule(start_e= args.policy_lr_start, end_e=args.policy_lr_end, duration=100, t=T)
+                
 
+                frac = 1.0 - (T - 1.0) / args.num_updates
+                lrnow = frac * args.q_lr_start
+                q_optimizer.param_groups[0]["lr"] = lrnow
+
+                frac = 1.0 - (T - 1.0) / args.num_updates
+                lrnow = frac * args.policy_lr_start
+                actor_optimizer.param_groups[0]["lr"] = lrnow
             for N in range(args.num_rollouts):
                 obs, _ = envs.reset(seed=args.seed)
                 episode_reward = []
@@ -405,8 +413,8 @@ def main(config):
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
                 for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-    # except:
-    #     logging_callback(0.0)
+    except:
+        logging_callback(0.0)
 
     envs.close()
     writer.close()
@@ -418,11 +426,11 @@ ray_init_config = {
 }
 
 search_alg = HEBOSearch(metric="reward", mode="max")
-re_search_alg = Repeater(search_alg, repeat=5)
+re_search_alg = Repeater(search_alg, repeat=1)
 
 analysis = tune.run(
     main,
-    num_samples=200,
+    num_samples=1000,
     config=config,
     search_alg=re_search_alg,
     # resources_per_trial=ray_init_config,
@@ -434,4 +442,4 @@ print("Best config: ", analysis.get_best_config(metric="reward", mode="max"))
 # Get a dataframe for analyzing trial results.
 df = analysis.results_df
 
-df.to_csv("tuning_2q.csv")
+df.to_csv("tuning_2q_norand.csv")

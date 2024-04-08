@@ -29,10 +29,8 @@ def empirical_logistic_bellman(pred, label, eta, values, discount, clip=None):
     z = (label - pred) / eta
     if clip is not None:
         z = torch.clamp(z, -clip, clip)
-    max_z = torch.max(z)
-    max_z = torch.where(max_z < -1.0, torch.tensor(-1.0, dtype=torch.float, device=max_z.device), max_z)
-    max_z = max_z.detach()
-    loss = torch.log(torch.sum(torch.exp(z - max_z)))
+
+    loss = torch.logsumexp(z, 0)
     return  eta * loss + torch.mean((1 - discount) * values, 0)
 
 

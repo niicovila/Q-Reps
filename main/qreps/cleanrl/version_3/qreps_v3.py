@@ -22,6 +22,67 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
+
+
+
+class BestResponseSampler:
+    def __init__(self, N, device, eta, beta=None):
+        self.n = N
+        self.eta = eta
+
+        self.z = torch.ones((self.n,)) / N
+
+        self.prob_dist = Categorical(self.z)
+        self.device = device
+
+    def reset(self):
+        self.h = torch.ones((self.n,))
+        self.z = torch.ones((self.n,))
+        self.prob_dist = Categorical(torch.softmax(torch.ones((self.n,)), 0))
+                                     
+    def probs(self):
+        return self.prob_dist.probs.to(self.device)
+    
+    def update(self, bellman):
+        t = self.eta * bellman
+        t = torch.clamp(t, -50, 50)
+        self.z = self.probs() * torch.exp(t)
+        self.z = torch.clamp(self.z / (torch.sum(self.z + 1e-8)), min=1e-8, max=1.0)
+        self.prob_dist = Categorical(self.z)
+
+class ExponentiatedGradientSampler:
+    def __init__(self, N, device, eta, beta=0.01):
+        self.n = N
+        self.eta = eta
+        self.beta = beta
+
+        self.h = torch.ones((self.n,)) / N
+        self.z = torch.ones((self.n,)) / N
+
+        self.prob_dist = Categorical(torch.ones((self.n,))/ N)
+        self.device = device
+
+    def reset(self):
+        self.h = torch.ones((self.n,))
+        self.z = torch.ones((self.n,))
+        self.prob_dist = Categorical(torch.softmax(torch.ones((self.n,)), 0))
+                                     
+    def probs(self):
+        return self.prob_dist.probs.to(self.device)
+    
+    def entropy(self):
+        return self.prob_dist.entropy().to(self.device)
+    
+    def update(self, bellman):
+        self.h = bellman -  self.eta * torch.log(self.n * self.probs())
+        t = self.beta*self.h
+        self.z = self.probs() * torch.exp(t)
+        self.z = torch.clamp(self.z / (torch.sum(self.z)), min=1e-8, max=1.0)
+        self.prob_dist = Categorical(self.z)
+
+
+
+
 Q_HIST = []
 @dataclass
 class Args:
@@ -54,9 +115,9 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "LunarLander-v2"
     """the id of the environment"""
-    total_timesteps: int = 500
+    total_timesteps: int = 1000
     """total timesteps of the experiments"""
-    num_updates: int = 20
+    num_updates: int = 30
     """the number of updates"""
     num_rollouts: int = 5
     """the number of rollouts before each update"""
@@ -96,8 +157,8 @@ class Args:
     """if toggled, the saddle point optimization will be used"""
     use_kl_loss: bool = True
     """if toggled, the kl loss will be used"""
-    max_grad_norm: float = None
-    """the maximum norm of the gradient"""
+    sampler = ExponentiatedGradientSampler
+    """the sampler to be used"""
 
 def make_env(env_id, seed, idx, capture_video, run_name):
     def thunk():
@@ -117,35 +178,6 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     slope = (end_e - start_e) / duration
     return max(slope * t + start_e, end_e)
 
-class ExponentiatedGradientSampler:
-    def __init__(self, N, device, eta, beta=0.01):
-        self.n = N
-        self.eta = eta
-        self.beta = beta
-
-        self.h = torch.ones((self.n,)) / N
-        self.z = torch.ones((self.n,)) / N
-
-        self.prob_dist = Categorical(torch.ones((self.n,))/ N)
-        self.device = device
-
-    def reset(self):
-        self.h = torch.ones((self.n,))
-        self.z = torch.ones((self.n,))
-        self.prob_dist = Categorical(torch.softmax(torch.ones((self.n,)), 0))
-                                     
-    def probs(self):
-        return self.prob_dist.probs.to(self.device)
-    
-    def entropy(self):
-        return self.prob_dist.entropy().to(self.device)
-    
-    def update(self, bellman):
-        self.h = bellman -  self.eta * torch.log(self.n * self.probs())
-        t = self.beta*self.h
-        self.z = self.probs() * torch.exp(t)
-        self.z = torch.clamp(self.z / (torch.sum(self.z)), min=1e-8, max=1.0)
-        self.prob_dist = Categorical(self.z)
 
 def empirical_bellman_error(observations, next_observations, actions, rewards, qf, policy, gamma):
     v_target = qf.get_values(next_observations, actions, policy)[1]
@@ -172,30 +204,28 @@ def nll_loss(alpha, observations, next_observations, rewards, actions, log_likes
 
 def kl_loss(alpha, observations, next_observations, rewards, actions, log_likes, q_net, policy):
     _, _, newlogprob, probs = policy.get_action(observations, actions)
-    q_values = q_net.get_values(observations, policy=policy)[0]
-    actor_loss = torch.mean(probs * (alpha * (newlogprob-log_likes.detach()) - q_values.detach()))
+    q_values, v = q_net.get_values(observations, policy=policy)
+    advantage = q_values - v.unsqueeze(1)
+    actor_loss = torch.mean(probs * (alpha * (newlogprob-log_likes.detach()) - advantage.detach()))
     return actor_loss
 
-def optimize_critic(eta, observations, next_observations, actions, rewards, q_net, policy, gamma, sampler, optimizer, steps=300, loss_fn=ELBE, max_grad_norm=None):
+def optimize_critic(eta, observations, next_observations, actions, rewards, q_net, policy, gamma, sampler, optimizer, steps=300, loss_fn=ELBE):
     def closure():
         optimizer.zero_grad()
         loss = loss_fn(eta, observations, next_observations, actions, rewards, q_net , policy, gamma, sampler)
         loss.backward()
         if sampler is not None: sampler.update(empirical_bellman_error(observations, next_observations, actions, rewards, q_net, policy, gamma))
-        if max_grad_norm is not None: nn.utils.clip_grad_norm_([param for group in optimizer.param_groups for param in group['params']], max_grad_norm)
+        # nn.utils.clip_grad_norm_([param for group in optimizer.param_groups for param in group['params']], 1.0)
         return loss
 
     for i in range(steps):
         optimizer.step(closure)
 
-def optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, q_net, policy, optimizer, steps=300, loss_fn=nll_loss, max_grad_norm=None):
+def optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, q_net, policy, optimizer, steps=300, loss_fn=nll_loss):
     def closure():
         optimizer.zero_grad()
         loss = loss_fn(alpha, observations, next_observations, rewards, actions, log_likes, q_net, policy)
         loss.backward()
-
-        if max_grad_norm is not None: nn.utils.clip_grad_norm_([param for group in optimizer.param_groups for param in group['params']], max_grad_norm)
-
         return loss
 
     for i in range(steps):
@@ -258,7 +288,7 @@ class QREPSPolicy(nn.Module):
 def main(args):
     import stable_baselines3 as sb3
 
-    # assert args.num_envs == 1, "vectorized envs are not supported at the moment"
+    # assert args.num_envs == 1, "vectorized envs are not supported at the moment"
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     if args.track:
         import wandb
@@ -290,7 +320,7 @@ def main(args):
     envs = gym.vector.SyncVectorEnv(
         [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name) for i in range(args.num_envs)]
     )
-    # assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    # assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     actor = QREPSPolicy(envs).to(device)
     qf = QNetwork(envs, args).to(device)
@@ -308,7 +338,7 @@ def main(args):
     if args.eta is None: eta = args.alpha
     else: eta = args.eta
 
-    rb = ReplayBuffer(args.buffer_size, device)
+    rb = ReplayBuffer(args.buffer_size)
     start_time = time.time()
 
     # TRY NOT TO MODIFY: start the game
@@ -317,15 +347,12 @@ def main(args):
     for T in range(args.num_updates):
         all_rewards = []
         if args.use_linear_schedule:
-
             q_optimizer.param_groups[0]["lr"] = linear_schedule(start_e= args.q_lr_start, end_e=args.q_lr_end, duration=100, t=T)
             actor_optimizer.param_groups[0]["lr"] = linear_schedule(start_e= args.policy_lr_start, end_e=args.policy_lr_end, duration=100, t=T)
 
         for N in range(args.num_rollouts):
-
-            obs, _ = envs.reset(seed=args.seed + np.random.randint(0, 1000))
+            obs, _ = envs.reset(seed=args.seed)
             episode_reward = []
-            
             for step in range(args.total_timesteps):
                 global_step += args.num_envs
                 with torch.no_grad():
@@ -333,10 +360,9 @@ def main(args):
 
                 # TRY NOT TO MODIFY: execute the game and log data.
                 next_obs, reward, done, truncation, infos = envs.step(actions.detach().cpu().numpy())
-
                 reward, obs, next_obs, done = torch.tensor(reward).to(device).view(-1), torch.Tensor(obs).to(device), torch.Tensor(next_obs).to(device), torch.Tensor(done).to(device)
+
                 rb.push(obs, next_obs, actions, reward, done, loglikes)
-                
                 obs = next_obs
                 all_rewards.append(reward)
                 episode_reward.append(reward)
@@ -348,6 +374,8 @@ def main(args):
                             writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                             break
                 if done.any():
+                    # print("Step:", global_step, "reward:", np.sum(episode_reward)/(args.num_envs))
+                    # writer.add_scalar("charts/episodic_return", np.sum(episode_reward)/(args.num_envs), global_step)
                     break
 
         # TRAINING PHASE         
@@ -361,12 +389,13 @@ def main(args):
         ) = rb.get_all()
 
         if args.saddle_point_optimization:
-            sampler = ExponentiatedGradientSampler(observations.shape[0], device, eta, beta=args.beta)
-            optimize_critic(eta, observations, next_observations, actions, rewards, qf, actor, args.gamma, sampler, q_optimizer, steps=args.update_epochs, loss_fn=saddle, max_grad_norm=args.max_grad_norm)
-        else: optimize_critic(eta, observations, next_observations, actions, rewards, qf, actor, args.gamma, None, q_optimizer, steps=args.update_epochs, loss_fn=ELBE, max_grad_norm=args.max_grad_norm)
+            sampler = args.sampler(observations.shape[0], device, eta, beta=args.beta)
+            optimize_critic(eta, observations, next_observations, actions, rewards, qf, actor, args.gamma, sampler, q_optimizer, steps=args.update_epochs, loss_fn=saddle)
+        else:
+            optimize_critic(eta, observations, next_observations, actions, rewards, qf, actor, args.gamma, None, q_optimizer, steps=args.update_epochs, loss_fn=ELBE)
 
-        if args.use_kl_loss: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, qf, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=kl_loss, max_grad_norm=args.max_grad_norm)
-        else: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, qf, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=nll_loss, max_grad_norm=args.max_grad_norm)
+        if args.use_kl_loss: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, qf, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=kl_loss)
+        else: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, qf, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=nll_loss)
         
         print("Step:", T, "reward:", np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs))
         writer.add_scalar("charts/episodic_return", np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs), T)
@@ -382,12 +411,13 @@ def main(args):
             alpha_loss.backward()
             a_optimizer.step()
             alpha = log_alpha.exp().item()
+            # qf.alpha = alpha
 
     envs.close()
     writer.close()
     return np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs)
 
-# ### HP SEARCH
+# ### HP SEARCH
 args = tyro.cli(Args)
 
 if args.run_multiple_seeds:
@@ -462,8 +492,8 @@ if args.q_histogram:
 #plt.show()
 
 # use_linear_schedule = False # False
-# saddle_point_optimization = True # False
-# use_kl_loss = True # True
+# saddle_point_optimization = True # False
+# use_kl_loss = True # True
 
 # alphas = [0.2, 2, 3, 5]
 # q_lrs = [0.1, 2.5e-2, 2.5e-3]

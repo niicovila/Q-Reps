@@ -1,28 +1,3 @@
-import argparse
-from copy import deepcopy
-import os
-import random
-import time
-from dataclasses import dataclass
-
-import gymnasium as gym
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import tyro
-from losses import empirical_logistic_bellman, S, log_gumbel
-from agent import Agent
-
-from torch.distributions.categorical import Categorical
-import torch.nn.functional as F
-from torch.utils.tensorboard import SummaryWriter
-from sampler import ExponentiatedGradientSampler, BestResponseSampler
-from ray import train
-from ray.tune.search import Repeater
-from ray.tune.search.hebo import HEBOSearch
-import ray.tune as tune  # Import the missing package
-
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/dqn/#dqnpy
 import itertools
 import os
@@ -46,42 +21,80 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
+Q_HIST = []
+@dataclass
+class Args:
+    exp_name: str = os.path.basename(__file__)[: -len(".py")]
+    """the name of this experiment"""
+    seed: int = 0
+    """seed of the experiment"""
+    run_multiple_seeds: bool = False
+    """if toggled, this script will run with multiple seeds"""
+    torch_deterministic: bool = True
+    """if toggled, `torch.backends.cudnn.deterministic=False`"""
+    cuda: bool = True
+    """if toggled, cuda will be enabled by default"""
+    track: bool = False
+    """if toggled, this experiment will be tracked with Weights and Biases"""
+    wandb_project_name: str = "QREPS_LunarLander-v2"
+    """the wandb's project name"""
+    wandb_entity: str = None
+    """the entity (team) of wandb's project"""
+    capture_video: bool = False
+    """whether to capture videos of the agent performances (check out `videos` folder)"""
 
-config = {
-    "exp_name": "QREPS",
-    "seed": 0,
-    "torch_deterministic": True,
-    "cuda": True,
-    "track": False,
-    "wandb_project_name": "QREPS_cleanRL",
-    "wandb_entity": None,
-    "capture_video": False,
-    "env_id": "CartPole-v1",
-    "total_timesteps": 100000,
-    "num_envs": tune.choice([4, 6, 8]),
-    "num_steps": tune.choice([128, 256, 500]),
-    "anneal_lr": True,
-    "gamma": 0.99,
-    "num_minibatches": tune.choice([2, 4, 8]),
-    "policy_lr_start": tune.choice([0.1, 0.001, 2.5e-3, 2.5e-4]),
-    "q_lr_start": tune.choice([0.1, 0.001, 2.5e-3, 2.5e-4]),
-    "alpha": tune.choice([0.5, 1.5, 2, 4, 6, 8]),
-    "eta": None,
-    "update_epochs": tune.choice([4, 10, 50, 100, 300]),
-    "autotune": tune.choice([True, False]),
-    "target_entropy_scale": tune.choice([0.3, 0.5, 0.7, 0.89]),
-    "saddle_point_optimization": tune.choice([True, False]),
-    "use_kl_loss": tune.choice([True, False]),
-    "q_histogram": False,
-    "batch_size": 0,
-    "minibatch_size": 0,
-    "num_iterations": 0
-}
+    save_model: bool = False
+    """whether to save model into the `runs/{run_name}` folder"""
+    upload_model: bool = False
+    """whether to upload the saved model to huggingface"""
+    hf_entity: str = ""
+    """the user or org name of the model repository from the Hugging Face Hub"""
 
-import logging
-FORMAT = "[%(asctime)s]: %(message)s"
-logging.basicConfig(level=logging.INFO, format=FORMAT)
-SEED_OFFSET = 0
+    # Algorithm specific arguments
+    env_id: str = "CartPole-v1"
+    """the id of the environment"""
+    total_timesteps: int = 100000
+    """total timesteps of the experiments"""
+    num_envs: int = 4
+    """the number of parallel game environments"""
+    num_steps: int = 500
+    """the number of steps to run in each environment per policy rollout"""
+    anneal_lr: bool = True
+    """if toggled, the learning rate will decrease linearly"""
+    gamma: float = 0.99
+    """the discount factor gamma"""
+    num_minibatches: int = 4
+    """the number of mini-batches"""
+
+    policy_lr_start: float = 2.5e-3
+    """the learning rate of the policy network optimizer"""
+    q_lr_start: float = 2.5e-3
+    """the learning rate of the Q network network optimizer"""
+    alpha: float = 2.0
+    """Entropy regularization coefficient."""
+    eta = None
+    """coefficient for the kl reg"""
+    update_epochs: int = 100
+    """the number of epochs for the policy and value networks"""
+    autotune: bool =  True
+    """automatic tuning of the entropy coefficient"""
+    target_entropy_scale: float = 0.5
+    """coefficient for scaling the autotune entropy target"""
+    
+    saddle_point_optimization: bool = True
+    """if toggled, the saddle point optimization will be used"""
+    use_kl_loss: bool = True
+    """if toggled, the kl loss will be used"""
+    q_histogram: bool = False
+    """if toggled, the q function histogram will be plotted"""
+
+    # to be filled in runtime
+    batch_size: int = 0
+    """the batch size (computed in runtime)"""
+    minibatch_size: int = 0
+    """the mini-batch size (computed in runtime)"""
+    num_iterations: int = 0
+    """the number of iterations (computed in runtime)"""
 
 def make_env(env_id, seed, idx, capture_video, run_name):
     def thunk():
@@ -131,19 +144,19 @@ class ExponentiatedGradientSampler:
         self.z = torch.clamp(self.z / (torch.sum(self.z)), min=1e-8, max=1.0)
         self.prob_dist = Categorical(self.z)
 
-def empirical_bellman_error(observations, next_observations, actions, rewards, qf, policy, gamma):
+def empirical_bellman_error(observations, next_observations, actions, rewards, dones, qf, policy, gamma):
     v_target = qf.get_values(next_observations, actions, policy)[1]
     q_features = qf.get_values(observations, actions, policy)[0]
-    output = rewards.flatten() + gamma * v_target - q_features
+    output = rewards.flatten() + gamma * v_target * (1 - dones) - q_features
     return output
 
 def saddle(eta, observations, next_observations, actions, rewards, qf, policy, gamma, sampler):
     errors = torch.sum(sampler.probs().detach() * (empirical_bellman_error(observations, next_observations, actions, rewards, qf, policy, gamma) - eta * torch.log(sampler.n * sampler.probs().detach()))) + (1 - gamma) * qf.get_values(observations, actions, policy)[1].mean()
     return errors
 
-def ELBE(eta, observations, next_observations, actions, rewards, qf, policy, gamma, sampler=None):
+def ELBE(eta, observations, next_observations, actions, rewards, dones, qf, policy, gamma, sampler=None):
     errors = eta * torch.logsumexp(
-        empirical_bellman_error(observations, next_observations, actions, rewards, qf, policy, gamma) / eta, 0
+        empirical_bellman_error(observations, next_observations, actions, rewards, dones, qf, policy, gamma) / eta, 0
     ) + torch.mean((1 - gamma) * qf.get_values(observations, actions, policy)[1], 0)
     return errors
 
@@ -243,7 +256,7 @@ class Sampler(nn.Module):
     def __init__(self, N):
         super().__init__()
         self.n = N
-        self.sampler = nn.Sequential(
+        self.sp = nn.Sequential(
             layer_init(nn.Linear(N, 56)),
             nn.Tanh(),
             layer_init(nn.Linear(56, 56)),
@@ -252,22 +265,23 @@ class Sampler(nn.Module):
         )
 
     def forward(self, x):
-        return self.sampler(x)
+        return self.sp(x)
 
     def get_probs(self, x):
         logits = self(x)
         sampler_dist = Categorical(logits=logits)
         return sampler_dist.probs
-    
-def main(config):
+
+
+def main(args):
     import torch
     import torch.nn as nn
     import torch.optim as optim
     
-    args = argparse.Namespace(**config)
-    args.seed = config["__trial_index__"] + SEED_OFFSET
+    # args = argparse.Namespace(**config)
+    # args.seed = config["__trial_index__"] + SEED_OFFSET
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    logging_callback=lambda r: train.report({'reward':r})
+    # logging_callback=lambda r: train.report({'reward':r})
 
     # assert args.num_envs == 1, "vectorized envs are not supported at the moment"
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
@@ -309,12 +323,11 @@ def main(config):
 
     actor = QREPSPolicy(envs).to(device)
     qf = QNetwork(envs, args).to(device)
-    if args.saddle_point_optimization:
-        sampler = Sampler(N=args.minibatch_size).to(device)
+    sampler = Sampler(N=args.minibatch_size).to(device)
 
-    q_optimizer = optim.Adam(list(qf.parameters()), lr=args.q_lr_start, eps=1e-4)
-    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr_start, eps=1e-4)
-    sampler_optimizer = optim.Adam(list(sampler.parameters()), lr=args.policy_lr_start, eps=1e-4)
+    q_optimizer = optim.SGD(list(qf.parameters()), lr=args.q_lr_start)
+    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr_start)
+    sampler_optimizer = optim.Adam(list(sampler.parameters()), lr=args.policy_lr_start)
 
     if args.autotune:
         target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
@@ -323,7 +336,6 @@ def main(config):
         a_optimizer = optim.Adam([log_alpha], lr=args.q_lr_start, eps=1e-4)
     else:
         alpha = args.alpha
-
     if args.eta is None: eta = args.alpha
     else: eta = args.eta
 
@@ -335,8 +347,8 @@ def main(config):
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs, envs.single_action_space.n)).to(device)
-    # values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    # qs = torch.zeros((args.num_steps, args.num_envs, envs.single_action_space.n)).to(device)
+    values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    qs = torch.zeros((args.num_steps, args.num_envs, envs.single_action_space.n)).to(device)
     next_observations = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)  # Added this line
     
     if args.eta is None: eta = args.alpha
@@ -348,9 +360,9 @@ def main(config):
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
-    try: 
-     for iteration in range(1, args.num_iterations + 1):
-        reward_iteration = []
+    # try: 
+    for iteration in range(1, args.num_iterations + 1):
+        
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
@@ -369,8 +381,8 @@ def main(config):
             with torch.no_grad():        
                 action, a_logprob, logprob, action_probs = actor.get_action(next_obs)
                 q, value = qf.get_values(next_obs, policy=actor)
-                # qs[step] = q
-                # values[step] = value.flatten()
+                qs[step] = q
+                values[step] = value.flatten()
                 all_logprobs = logprob
 
             actions[step] = action
@@ -381,26 +393,24 @@ def main(config):
 
             next_done = np.logical_or(terminations, truncations)
             rewards[step] = torch.tensor(reward).to(device).view(-1)
-            reward = torch.tensor(reward).to(device).view(-1)
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device)
             
             next_observations[step] = next_obs
-            # reward_iteration.append(reward)
 
             if "final_info" in infos:
                 for info in infos["final_info"]:
                     if info and "episode" in info:
-                        # print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
+                        print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                        logging_callback(info["episode"]["r"])
+                        # logging_callback(info["episode"]["r"])
         
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_next_obs = next_observations.reshape((-1,) + envs.single_observation_space.shape)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
         b_logprobs = logprobs.reshape((-1, envs.single_action_space.n))
-        # b_values = values.reshape(-1)
-        # b_qs = qs.reshape((-1, envs.single_action_space.n))
+        b_values = values.reshape(-1)
+        b_qs = qs.reshape((-1, envs.single_action_space.n))
         b_rewards = rewards.flatten()
         b_dones = dones.flatten()
         b_inds = np.arange(args.batch_size)
@@ -413,13 +423,12 @@ def main(config):
                     end = start + args.minibatch_size
                     mb_inds = b_inds[start:end]
 
-                    if args.saddle_point_optimization:
+                    if args.saddle_point_optimization: 
                         delta = b_rewards[mb_inds].squeeze() + args.gamma * qf.get_values(b_next_obs[mb_inds], policy=actor)[1] * (1 - b_dones[mb_inds].squeeze())
                         bellman = delta.detach()
-                        z_n = sampler.get_probs(bellman) 
+                        z_n = sampler.get_probs(bellman)
                         critic_loss = torch.sum(z_n.detach() * (delta - eta * torch.log(sampler.n * z_n.detach()))) + (1 - args.gamma) * qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[1].mean()
-                    
-                    else: critic_loss = ELBE(eta, b_obs[mb_inds], b_next_obs[mb_inds], b_actions[mb_inds], b_rewards[mb_inds], qf, actor, args.gamma)
+                    else: critic_loss = ELBE(eta, b_obs[mb_inds], b_next_obs[mb_inds], b_actions[mb_inds], b_rewards[mb_inds], b_dones[mb_inds].squeeze(), qf, actor, args.gamma)
 
                     q_optimizer.zero_grad()
                     critic_loss.backward()
@@ -449,25 +458,26 @@ def main(config):
                         alpha_loss.backward()
                         a_optimizer.step()
                         alpha = log_alpha.exp().item()
-    except:
-        logging_callback(-1000)
+    # except:
+    #     print("An error occured")
+    #     KeyboardInterrupt
     envs.close()
     writer.close()
 
-search_alg = HEBOSearch(metric="reward", mode="max")
-re_search_alg = Repeater(search_alg, repeat=1)
 
-analysis = tune.run(
-    main,
-    num_samples=100,
-    config=config,
-    search_alg=re_search_alg,
-    local_dir="/Users/nicolasvila/workplace/uni/tfg_v2/tests/results_tune",
-)
+# ### HP SEARCH
+args = tyro.cli(Args)
 
-print("Best config: ", analysis.get_best_config(metric="reward", mode="max"))
+if args.run_multiple_seeds:
+    rewards = []
+    n_seeds = 10
 
-# Get a dataframe for analyzing trial results.
-df = analysis.results_df
+    for i in range(n_seeds):
+        args.seed = i
+        reward = main(args)
+        rewards.append(reward)
+    print("Average reward:", np.mean(rewards), "stddev:", np.std(rewards))
 
-df.to_csv("qreps_analysis.csv")
+else:
+    reward = main(args)
+
