@@ -58,18 +58,18 @@ config = {
     "capture_video": False,
     "env_id": "CartPole-v1",
     "total_timesteps": 100000,
-    "num_envs": tune.choice([4, 6, 8]),
+    "num_envs": tune.choice([4, 8]),
     "num_steps": tune.choice([128, 256, 500]),
-    "anneal_lr": True,
+    "anneal_lr": tune.choice([True, False]),
     "gamma": 0.99,
-    "num_minibatches": tune.choice([2, 4, 8]),
-    "policy_lr_start": tune.choice([0.1, 0.001, 2.5e-3, 2.5e-4]),
-    "q_lr_start": tune.choice([0.1, 0.001, 2.5e-3, 2.5e-4]),
-    "alpha": tune.choice([0.5, 1.5, 2, 4, 6, 8]),
+    "num_minibatches": tune.choice([4, 8]),
+    "policy_lr_start": tune.choice([0.001, 2.5e-3, 2.5e-4]),
+    "q_lr_start": tune.choice([0.001, 2.5e-3, 2.5e-4]),
+    "alpha": tune.choice([0.5, 2, 4, 6, 10]),
     "eta": None,
-    "update_epochs": tune.choice([4, 10, 50, 100, 300]),
+    "update_epochs": tune.choice([4, 15, 50, 100, 300]),
     "autotune": tune.choice([True, False]),
-    "target_entropy_scale": tune.choice([0.3, 0.5, 0.7, 0.89]),
+    "target_entropy_scale": tune.choice([0.25, 0.5, 0.89]),
     "saddle_point_optimization": tune.choice([True, False]),
     "use_kl_loss": tune.choice([True, False]),
     "q_histogram": False,
@@ -311,11 +311,12 @@ def main(config):
     qf = QNetwork(envs, args).to(device)
     if args.saddle_point_optimization:
         sampler = Sampler(N=args.minibatch_size).to(device)
+        sampler_optimizer = optim.Adam(list(sampler.parameters()), lr=args.policy_lr_start, eps=1e-4)
+
 
     q_optimizer = optim.Adam(list(qf.parameters()), lr=args.q_lr_start, eps=1e-4)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr_start, eps=1e-4)
-    sampler_optimizer = optim.Adam(list(sampler.parameters()), lr=args.policy_lr_start, eps=1e-4)
-
+ 
     if args.autotune:
         target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
         log_alpha = torch.zeros(1, requires_grad=True, device=device)
@@ -459,7 +460,7 @@ re_search_alg = Repeater(search_alg, repeat=1)
 
 analysis = tune.run(
     main,
-    num_samples=100,
+    num_samples=500,
     config=config,
     search_alg=re_search_alg,
     local_dir="/Users/nicolasvila/workplace/uni/tfg_v2/tests/results_tune",
@@ -470,4 +471,4 @@ print("Best config: ", analysis.get_best_config(metric="reward", mode="max"))
 # Get a dataframe for analyzing trial results.
 df = analysis.results_df
 
-df.to_csv("qreps_analysis.csv")
+df.to_csv("qreps_analysis_v2.csv")
