@@ -56,21 +56,21 @@ config = {
     "wandb_project_name": "QREPS_cleanRL",
     "wandb_entity": None,
     "capture_video": False,
-    "env_id": "CartPole-v1",
-    "total_timesteps": 100000,
+    "env_id": "LunarLander-v2",
+    "total_timesteps": 50000,
     "num_envs": tune.choice([4, 8]),
     "num_steps": tune.choice([128, 256, 500]),
     "anneal_lr": tune.choice([True, False]),
     "gamma": 0.99,
-    "num_minibatches": tune.choice([4, 8]),
-    "policy_lr_start": tune.choice([0.001, 2.5e-3, 2.5e-4]),
-    "q_lr_start": tune.choice([0.001, 2.5e-3, 2.5e-4]),
-    "alpha": tune.choice([0.5, 2, 4, 6, 10]),
+    "num_minibatches": tune.choice([2, 4, 8, 16]),
+    "policy_lr_start": tune.choice([0.1, 0.001, 2.5e-3, 2.5e-4]),
+    "q_lr_start": tune.choice([0.1, 0.001, 2.5e-3, 2.5e-4]),
+    "alpha": tune.choice([0.5, 1.5, 2, 4, 6, 8]),
     "eta": None,
-    "update_epochs": tune.choice([4, 15, 50, 100, 300]),
+    "update_epochs": tune.choice([10, 50, 100, 300]),
     "autotune": tune.choice([True, False]),
-    "target_entropy_scale": tune.choice([0.25, 0.5, 0.89]),
-    "saddle_point_optimization": tune.choice([True, False]),
+    "target_entropy_scale": tune.choice([0.3, 0.5, 0.7, 0.89]),
+    "saddle_point_optimization": False,
     "use_kl_loss": tune.choice([True, False]),
     "q_histogram": False,
     "batch_size": 0,
@@ -243,7 +243,7 @@ class Sampler(nn.Module):
     def __init__(self, N):
         super().__init__()
         self.n = N
-        self.sampler = nn.Sequential(
+        self.z = nn.Sequential(
             layer_init(nn.Linear(N, 56)),
             nn.Tanh(),
             layer_init(nn.Linear(56, 56)),
@@ -252,7 +252,7 @@ class Sampler(nn.Module):
         )
 
     def forward(self, x):
-        return self.sampler(x)
+        return self.z(x)
 
     def get_probs(self, x):
         logits = self(x)
@@ -311,7 +311,7 @@ def main(config):
     qf = QNetwork(envs, args).to(device)
     if args.saddle_point_optimization:
         sampler = Sampler(N=args.minibatch_size).to(device)
-        sampler_optimizer = optim.Adam(list(sampler.parameters()), lr=args.policy_lr_start, eps=1e-4)
+        sampler_optimizer = optim.Adam(list(sampler.parameters()), lr=args.policy_lr_start, eps=1e-5)
 
 
     q_optimizer = optim.Adam(list(qf.parameters()), lr=args.q_lr_start, eps=1e-4)
@@ -368,14 +368,10 @@ def main(config):
 
             # ALGO LOGIC: action logic
             with torch.no_grad():        
-                action, a_logprob, logprob, action_probs = actor.get_action(next_obs)
-                q, value = qf.get_values(next_obs, policy=actor)
-                # qs[step] = q
-                # values[step] = value.flatten()
-                all_logprobs = logprob
+                action, _, logprob, _ = actor.get_action(next_obs)
 
             actions[step] = action
-            logprobs[step] = all_logprobs
+            logprobs[step] = logprob
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
@@ -395,32 +391,40 @@ def main(config):
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                         logging_callback(info["episode"]["r"])
+                        if info["episode"]["r"] >= 5:
+                            best_args_df = pd.DataFrame()
+                            current_best = info["episode"]["r"]
+                            # Convert the args to a dictionary and add to the DataFrame
+                            args_dict = vars(args)
+                            args_dict["episodic_return"] = current_best
+                            best_args_df = best_args_df._append(args_dict, ignore_index=True)
+                            best_args_df.to_csv(f"best_args.csv")
         
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_next_obs = next_observations.reshape((-1,) + envs.single_observation_space.shape)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
         b_logprobs = logprobs.reshape((-1, envs.single_action_space.n))
-        # b_values = values.reshape(-1)
-        # b_qs = qs.reshape((-1, envs.single_action_space.n))
+
         b_rewards = rewards.flatten()
         b_dones = dones.flatten()
         b_inds = np.arange(args.batch_size)
-        clipfracs = []
-        weights_after_each_epoch = []
+
 
         for epoch in range(args.update_epochs):
             np.random.shuffle(b_inds)
             for start in range(0, args.batch_size, args.minibatch_size):
                     end = start + args.minibatch_size
                     mb_inds = b_inds[start:end]
+                    delta = b_rewards[mb_inds].squeeze() + args.gamma * qf.get_values(b_next_obs[mb_inds], policy=actor)[1] * (1 - b_dones[mb_inds].squeeze()) - qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[0]
 
                     if args.saddle_point_optimization:
-                        delta = b_rewards[mb_inds].squeeze() + args.gamma * qf.get_values(b_next_obs[mb_inds], policy=actor)[1] * (1 - b_dones[mb_inds].squeeze())
                         bellman = delta.detach()
                         z_n = sampler.get_probs(bellman) 
                         critic_loss = torch.sum(z_n.detach() * (delta - eta * torch.log(sampler.n * z_n.detach()))) + (1 - args.gamma) * qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[1].mean()
                     
-                    else: critic_loss = ELBE(eta, b_obs[mb_inds], b_next_obs[mb_inds], b_actions[mb_inds], b_rewards[mb_inds], qf, actor, args.gamma)
+                    else: 
+                        # critic_loss = ELBE(eta, b_obs[mb_inds], b_next_obs[mb_inds], b_actions[mb_inds], b_rewards[mb_inds], qf, actor, args.gamma)
+                        critic_loss = eta * torch.log(torch.mean(torch.exp(delta / eta), 0)) + torch.mean((1 - args.gamma) * qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[1], 0)
 
                     q_optimizer.zero_grad()
                     critic_loss.backward()
@@ -451,24 +455,24 @@ def main(config):
                         a_optimizer.step()
                         alpha = log_alpha.exp().item()
     except:
-        logging_callback(-1000)
+        logging_callback(-11111)
     envs.close()
     writer.close()
 
 search_alg = HEBOSearch(metric="reward", mode="max")
 re_search_alg = Repeater(search_alg, repeat=1)
 
+ray_init_config = {
+    "CPU": 4,
+}
+
 analysis = tune.run(
     main,
-    num_samples=500,
+    num_samples=400,
     config=config,
     search_alg=re_search_alg,
+    resources_per_trial=ray_init_config,
     local_dir="/Users/nicolasvila/workplace/uni/tfg_v2/tests/results_tune",
 )
-
-print("Best config: ", analysis.get_best_config(metric="reward", mode="max"))
-
-# Get a dataframe for analyzing trial results.
 df = analysis.results_df
-
-df.to_csv("qreps_analysis_v2.csv")
+df.to_csv("LunarLander_qreps_analysis_v2.csv")

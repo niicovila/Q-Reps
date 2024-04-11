@@ -22,9 +22,6 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
-
-
-
 class BestResponseSampler:
     def __init__(self, N, device, eta, beta=None):
         self.n = N
@@ -96,7 +93,7 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
+    track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "QREPS_LunarLander-v2"
     """the wandb's project name"""
@@ -117,9 +114,9 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 1000
     """total timesteps of the experiments"""
-    num_updates: int = 30
+    num_updates: int = 1000
     """the number of updates"""
-    num_rollouts: int = 5
+    num_rollouts: int = 4
     """the number of rollouts before each update"""
     num_envs: int = 1
     """the number of parallel game environments"""
@@ -139,19 +136,19 @@ class Args:
     """Entropy regularization coefficient."""
     eta = None
     """coefficient for the kl reg"""
-    update_epochs: int = 50
+    update_epochs: int = 100
     """the number of epochs for the policy and value networks"""
     update_policy_epochs: int = 50
     """the number of epochs for the policy network"""
     beta: float = 4e-5
     """the sampler step size"""
-    autotune: bool =  True
+    autotune: bool =  False
     """automatic tuning of the entropy coefficient"""
     q_histogram: bool = False
     """if toggled, the q function histogram will be plotted"""
     target_entropy_scale: float = 0.5
     """coefficient for scaling the autotune entropy target"""
-    use_linear_schedule: bool = True
+    use_linear_schedule: bool = False
     """if toggled, the learning rate will decrease linearly"""
     saddle_point_optimization: bool = False
     """if toggled, the saddle point optimization will be used"""
@@ -159,6 +156,7 @@ class Args:
     """if toggled, the kl loss will be used"""
     sampler = ExponentiatedGradientSampler
     """the sampler to be used"""
+    anneal_lr: bool = True
 
 def make_env(env_id, seed, idx, capture_video, run_name):
     def thunk():
@@ -343,15 +341,20 @@ def main(args):
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
-
-    for T in range(args.num_updates):
+    obs, _ = envs.reset(seed=args.seed)
+    for T in range(1, args.num_updates+1):
         all_rewards = []
-        if args.use_linear_schedule:
-            q_optimizer.param_groups[0]["lr"] = linear_schedule(start_e= args.q_lr_start, end_e=args.q_lr_end, duration=100, t=T)
-            actor_optimizer.param_groups[0]["lr"] = linear_schedule(start_e= args.policy_lr_start, end_e=args.policy_lr_end, duration=100, t=T)
+
+        # Annealing the rate if instructed to do so.
+        if args.anneal_lr:
+            frac = 1.0 - (T - 1.0) / args.num_updates
+            lrnow = frac * args.policy_lr_start
+            actor_optimizer.param_groups[0]["lr"] = lrnow
+
+            lrnow = frac * args.q_lr_start
+            q_optimizer.param_groups[0]["lr"] = lrnow
 
         for N in range(args.num_rollouts):
-            obs, _ = envs.reset(seed=args.seed)
             episode_reward = []
             for step in range(args.total_timesteps):
                 global_step += args.num_envs
@@ -369,9 +372,9 @@ def main(args):
                 if "final_info" in infos:
                     for info in infos["final_info"]:
                         if info and "episode" in info:
-                            print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                            writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                            writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                            # print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
+                            # writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
+                            # writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                             break
                 if done.any():
                     # print("Step:", global_step, "reward:", np.sum(episode_reward)/(args.num_envs))
@@ -402,7 +405,7 @@ def main(args):
         
         rb.reset()
         if args.autotune:
-            actions, a_loglike, loglikes, probs = actor.get_action(torch.Tensor(obs).to(device))
+            actions, a_loglike, loglikes, probs = actor.get_action(torch.Tensor(observations).to(device))
             
             # re-use action probabilities for temperature loss
             alpha_loss = (probs.detach() * (-log_alpha.exp() * (loglikes + target_entropy).detach())).mean()
