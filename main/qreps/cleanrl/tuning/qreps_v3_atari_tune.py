@@ -60,8 +60,6 @@ config = {
   "alpha":  tune.choice([0.2, 0.5, 2, 4, 6]),
   "eta": None,
   "beta": tune.choice([0.1, 0.01, 0.002, 4e-5]),
-  "autotune":  tune.choice([True, False]),
-  "target_entropy_scale": tune.choice([0.2, 0.35, 0.5, 0.89]),
   "use_linear_schedule":  tune.choice([True, False]),
   "saddle_point_optimization":  tune.choice([True, False]),
   "use_kl_loss": tune.choice([True, False]),
@@ -312,15 +310,8 @@ def main(config: dict):
     qf = QNetwork(envs, args).to(device)
 
     q_optimizer = optim.Adam(list(qf.parameters()), lr=args.q_lr)
-    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
-
-    if args.autotune:
-        target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
-        log_alpha = torch.zeros(1, requires_grad=True, device=device)
-        alpha = log_alpha.exp().item()
-        a_optimizer = optim.Adam([log_alpha], lr=args.q_lr, eps=1e-4)
-    else:
-        alpha = args.alpha
+    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)    
+    alpha = args.alpha
     if args.eta is None: eta = args.alpha
     else: eta = args.eta
 
@@ -345,27 +336,21 @@ def main(config: dict):
             actor_optimizer.param_groups[0]["lr"] = lrnow
 
         for N in range(args.num_rollouts):
-
             obs, _ = envs.reset(seed=args.seed)
             episode_reward = []
             for step in range(args.total_timesteps):
-                
                 global_step += args.num_envs
-                
                 with torch.no_grad():
-                    action, a_loglike, loglikes, probs = actor.get_action(torch.Tensor(obs).to(device))
+                    action, _, loglikes, _ = actor.get_action(torch.Tensor(obs).to(device))
                 
                 # TRY NOT TO MODIFY: execute the game and log data.
                 next_obs, reward, done, truncation, info = envs.step(action.cpu().numpy())
                 reward, obs, next_obs, done = torch.tensor(reward).to(device).view(-1), torch.Tensor(obs).to(device), torch.Tensor(next_obs).to(device), torch.Tensor(done).to(device)
-                
                 rb.push(obs, next_obs, action, reward, done, loglikes)
-                
                 obs = next_obs
                 all_rewards.append(reward)
                 episode_reward.append(reward)
                 if done.any():
-                    # print("Step:", global_step, "reward:", np.sum([ep_reward.cpu().numpy() for ep_reward in episode_reward])/(args.num_envs))
                     break
 
         # TRAINING PHASE         
@@ -388,26 +373,16 @@ def main(config: dict):
         else: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, qf, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=nll_loss)
         rb.reset()
          
-        # print("Iteation:", T, "reward:", np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs))
         writer.add_scalar("charts/episodic_return", np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs), T)
-        logging_callback(np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs))
+        logging_callback(torch.sum(torch.Tensor(all_rewards))/(args.num_rollouts*args.num_envs))
         
-        if args.autotune:
-            _, a_loglike, loglikes, probs = actor.get_action(torch.Tensor(obs).to(device))
-            # re-use action probabilities for temperature loss
-            alpha_loss = (probs.detach() * (-log_alpha.exp() * (loglikes + target_entropy).detach())).mean()
-
-            a_optimizer.zero_grad()
-            alpha_loss.backward()
-            a_optimizer.step()
-            alpha = log_alpha.exp().item()
 
     envs.close()
     writer.close()
 
 ray_init_config = {
-    "num_gpus": 1,  # Adjust based on the number of available GPUs
-    "num_cpus": 4,  # Number of CPU cores to allocate per trial
+    "gpu": 1,  # Adjust based on the number of available GPUs
+    "cpu": 4,  # Number of CPU cores to allocate per trial
     # Additional Ray initialization options if needed
 }
 

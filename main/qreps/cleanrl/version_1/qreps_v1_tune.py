@@ -38,8 +38,6 @@ config = {
     "alpha": tune.choice([2, 4, 6, 8]),
     "eta": None,
     "update_epochs": tune.choice([50, 100, 300]),
-    "autotune": tune.choice([True, False]),
-    "target_entropy_scale": tune.choice([0.3, 0.5, 0.7, 0.89]),
     "saddle_point_optimization": False,
     "use_kl_loss": tune.choice([True, False]),
     "q_histogram": False,
@@ -241,15 +239,7 @@ def main(config):
 
     q_optimizer = optim.Adam(list(qf.parameters()), lr=args.q_lr_start, eps=1e-4)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr_start, eps=1e-4)
- 
-    if args.autotune:
-        target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
-        log_alpha = torch.zeros(1, requires_grad=True, device=device)
-        alpha = log_alpha.exp().item()
-        a_optimizer = optim.Adam([log_alpha], lr=args.q_lr_start, eps=1e-4)
-    else:
-        alpha = args.alpha
-
+    alpha = args.alpha
     if args.eta is None: eta = args.alpha
     else: eta = args.eta
 
@@ -362,17 +352,7 @@ def main(config):
                     actor_optimizer.zero_grad()
                     actor_loss.backward()
                     actor_optimizer.step()
-   
-                    if args.autotune:
-                        _, _, loglikes, probs = actor.get_action(torch.Tensor(b_obs[mb_inds]).to(device))
-                        
-                        # re-use action probabilities for temperature loss
-                        alpha_loss = (probs.detach() * (-log_alpha.exp() * (loglikes + target_entropy).detach())).mean()
 
-                        a_optimizer.zero_grad()
-                        alpha_loss.backward()
-                        a_optimizer.step()
-                        alpha = log_alpha.exp().item()
     except:
         logging_callback(-11111)
     envs.close()

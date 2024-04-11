@@ -76,12 +76,9 @@ class Args:
     """the number of epochs for the policy and value networks"""
     update_policy_epochs: int = 2
     """the number of epochs for the policy network"""
-    autotune: bool =  True
-    """automatic tuning of the entropy coefficient"""
-    target_entropy_scale: float = 0.89
-    """coefficient for scaling the autotune entropy target"""
 
-    use_linear_schedule: bool = True
+
+    anneal_lr: bool = True
     """if toggled, the learning rate will decrease linearly"""
     saddle_point_optimization: bool = False
     """if toggled, the saddle point optimization will be used"""
@@ -111,10 +108,6 @@ def make_env(env_id, seed, idx, capture_video, run_name):
         return env
 
     return thunk
-
-def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
-    slope = (end_e - start_e) / duration
-    return max(slope * t + start_e, end_e)
 
 class ExponentiatedGradientSampler:
     def __init__(self, N, device, eta, beta=0.01):
@@ -284,7 +277,6 @@ class QREPSPolicy(nn.Module):
 
 def main(args):
 
-    # assert args.num_envs == 1, "vectorized envs are not supported at the moment"
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     if args.track:
         import wandb
@@ -321,21 +313,14 @@ def main(args):
     actor = QREPSPolicy(envs).to(device)
     qf = QNetwork(envs, args).to(device)
 
-    q_optimizer = optim.Adam(list(qf.parameters()), lr=args.q_lr)
-    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
+    q_optimizer = optim.Adam(list(qf.parameters()), lr=args.q_lr, eps=1e-4)
+    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr, eps=1e-4)
 
-    if args.autotune:
-        target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
-        log_alpha = torch.zeros(1, requires_grad=True, device=device)
-        alpha = log_alpha.exp().item()
-        a_optimizer = optim.Adam([log_alpha], lr=args.q_lr, eps=1e-4)
-    else:
-        alpha = args.alpha
+    alpha = args.alpha
     if args.eta is None: eta = args.alpha
     else: eta = args.eta
 
     rb = ReplayBufferAtari(args.buffer_size)
-    start_time = time.time()
 
     # TRY NOT TO MODIFY: start the game
     
@@ -345,7 +330,7 @@ def main(args):
 
         all_rewards = []
 
-        if args.use_linear_schedule:
+        if args.anneal_lr:
             frac = 1.0 - (T - 1.0) / args.num_updates
             lrnow = frac * args.q_lr
             q_optimizer.param_groups[0]["lr"] = lrnow
@@ -356,14 +341,14 @@ def main(args):
 
         for N in range(args.num_rollouts):
 
-            obs, _ = envs.reset(seed=args.seed)
+            obs, _ = envs.reset()
             episode_reward = []
             for step in range(args.total_timesteps):
                 
                 global_step += args.num_envs
                 
                 with torch.no_grad():
-                    action, a_loglike, loglikes, probs = actor.get_action(torch.Tensor(obs).to(device))
+                    action, _, loglikes, _ = actor.get_action(torch.Tensor(obs).to(device))
                 
                 # TRY NOT TO MODIFY: execute the game and log data.
                 next_obs, reward, done, truncation, info = envs.step(action.cpu().numpy())
@@ -400,16 +385,6 @@ def main(args):
         print("Iteation:", T, "reward:", torch.sum(torch.Tensor(all_rewards))/(args.num_rollouts*args.num_envs))
         writer.add_scalar("charts/episodic_return", np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs), T)
 
-        
-        if args.autotune:
-            _, a_loglike, loglikes, probs = actor.get_action(torch.Tensor(obs).to(device))
-            # re-use action probabilities for temperature loss
-            alpha_loss = (probs.detach() * (-log_alpha.exp() * (loglikes + target_entropy).detach())).mean()
-
-            a_optimizer.zero_grad()
-            alpha_loss.backward()
-            a_optimizer.step()
-            alpha = log_alpha.exp().item()
 
     envs.close()
     writer.close()

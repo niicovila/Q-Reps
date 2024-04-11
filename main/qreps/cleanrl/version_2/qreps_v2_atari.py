@@ -70,10 +70,6 @@ class Args:
     """coefficient for the kl reg"""
     update_epochs: int = 3
     """the number of epochs for the policy and value networks"""
-    autotune: bool =  False
-    """automatic tuning of the entropy coefficient"""
-    target_entropy_scale: float = 0.5
-    """coefficient for scaling the autotune entropy target"""
     beta: float = 0.01
     """coefficient for the saddle point optimization"""
     sampler_lr: float = 2.5e-4

@@ -25,11 +25,10 @@ class ExponentiatedGradientSampler:
         return self.prob_dist.entropy().to(self.device)
     
     def update(self, pred, label):
-        # self.h = (label - pred) -  self.eta * torch.log(self.n * self.probs())
+        self.h = (label - pred) -  self.eta * torch.log(self.n * self.probs())
         t = torch.clamp(self.beta*self.h, -10, 10)
         self.z = self.probs() * torch.exp(t)
         self.z = torch.clamp(self.z / (torch.sum(self.z)), min=1e-8, max=1.0)
-        self.h = (label - pred) -  self.eta * torch.log(self.n * self.probs())
         self.prob_dist = Categorical(self.z)
 
 class BestResponseSampler:

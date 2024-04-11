@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 from replay_buffer import ReplayBuffer
 
-
+from torch.nn.functional import F
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 from ray import train
@@ -101,8 +101,6 @@ config = {
   "alpha":  tune.choice([2, 4, 6, 8]),
   "eta": None,
   "beta": tune.choice([0.1, 0.01, 0.002, 4e-5]),
-  "autotune":  tune.choice([True, False]),
-  "target_entropy_scale": tune.choice([0.2, 0.35, 0.5, 0.89]),
   "use_linear_schedule":  False,
   "anneal_lr": tune.choice([True, False]),
   "saddle_point_optimization":  tune.choice([True, False]),
@@ -132,7 +130,6 @@ def make_env(env_id, seed, idx, capture_video, run_name):
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     slope = (end_e - start_e) / duration
     return max(slope * t + start_e, end_e)
-
 
 def empirical_bellman_error(observations, next_observations, actions, rewards, qf, policy, gamma):
     v_target = qf.get_values(next_observations, actions, policy)[1]
@@ -167,8 +164,7 @@ def optimize_critic(eta, observations, next_observations, actions, rewards, q_ne
         optimizer.zero_grad()
         loss = loss_fn(eta, observations, next_observations, actions, rewards, q_net , policy, gamma, sampler)
         loss.backward()
-        if sampler is not None: sampler.update(empirical_bellman_error(observations, next_observations, actions, rewards, q_net, policy, gamma))
-        # nn.utils.clip_grad_norm_([param for group in optimizer.param_groups for param in group['params']], 1.0)
+        if sampler is not None: sampler.update(empirical_bellman_error(observations, next_observations, actions, rewards, q_net, policy, gamma).detach())
         return loss
 
     for i in range(steps):
@@ -184,18 +180,18 @@ def optimize_actor(alpha, observations, next_observations, rewards, actions, log
     for i in range(steps):
         optimizer.step(closure)
 
-# ALGO LOGIC: initialize agent here:
+
 class QNetwork(nn.Module):
     def __init__(self, env, args):
         super().__init__()
         self.env = env
         self.alpha = args.alpha
         self.critic = nn.Sequential(
-            layer_init(nn.Linear(np.array(env.single_observation_space.shape).prod(), 128)),
+            nn.Linear(np.array(env.single_observation_space.shape).prod(), 128),
             nn.ReLU(),
-            layer_init(nn.Linear(128, 128)),
+            nn.Linear(128, 128),
             nn.ReLU(),
-            layer_init(nn.Linear(128, env.single_action_space.n), std=1),
+            nn.Linear(128, env.single_action_space.n),
         )
 
     def forward(self, x):
@@ -217,24 +213,27 @@ class QREPSPolicy(nn.Module):
     def __init__(self, env):
         super().__init__()
         self.actor = nn.Sequential(
-            layer_init(nn.Linear(np.array(env.single_observation_space.shape).prod(), 256)),
+            nn.Linear(np.array(env.single_observation_space.shape).prod(), 256),
             nn.Tanh(),
-            layer_init(nn.Linear(256, 256)),
+            nn.Linear(256, 256),
             nn.Tanh(),
-            layer_init(nn.Linear(256, 256)),
+            nn.Linear(256, 256),
             nn.Tanh(),
-            layer_init(nn.Linear(256, env.single_action_space.n), std=0.01),
+            nn.Linear(256, env.single_action_space.n),
         )
 
     def forward(self, x):
         return self.actor(x)
 
-    def get_action(self, x, action=None):
-        logits = self(x)
+    def get_action(self, x, action=None, critic=None):
+        if critic is not None:
+            logits = critic(x)
+        else:
+            logits = self(x)
         policy_dist = Categorical(logits=logits)
         if action is None: action = policy_dist.sample()
         action_probs = policy_dist.probs
-        log_prob = torch.log(action_probs+1e-6)
+        log_prob = F.log_softmax(action_probs, dim=1)
         action_log_prob = policy_dist.log_prob(action)
         return action, action_log_prob, log_prob, action_probs
 
@@ -282,32 +281,25 @@ def main(config: dict):
     actor = QREPSPolicy(envs).to(device)
     qf = QNetwork(envs, args).to(device)
 
-    q_optimizer = optim.SGD(list(qf.parameters()), lr=args.q_lr_start)
-    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr_start)
+    q_optimizer = optim.Adam(list(qf.parameters()), lr=args.q_lr_start, eps=1e-4)
+    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr_start, eps=1e-4)
 
-    if args.autotune:
-        target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
-        log_alpha = torch.zeros(1, requires_grad=True, device=device)
-        alpha = log_alpha.exp().item()
-        a_optimizer = optim.Adam([log_alpha], lr=args.q_lr_start, eps=1e-4)
-    else:
-        alpha = args.alpha
+    alpha = args.alpha
     if args.eta is None: eta = args.alpha
     else: eta = args.eta
 
     rb = ReplayBuffer(args.buffer_size)
-    start_time = time.time()
+
     obs, _ = envs.reset(seed=args.seed)
-
-
-    # TRY NOT TO MODIFY: start the game
     global_step = 0
     try:
      for T in range(1, args.num_updates+1):
         all_rewards = []
+        
         if args.use_linear_schedule:
             q_optimizer.param_groups[0]["lr"] = linear_schedule(start_e= args.q_lr_start, end_e=args.q_lr_end, duration=100, t=T)
             actor_optimizer.param_groups[0]["lr"] = linear_schedule(start_e= args.policy_lr_start, end_e=args.policy_lr_end, duration=100, t=T)
+        
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
             frac = 1.0 - (T - 1.0) / args.num_updates
@@ -319,13 +311,14 @@ def main(config: dict):
 
         for N in range(args.num_rollouts):
             episode_reward = []
+            obs, _ = envs.reset()
             for step in range(args.total_timesteps):
                 global_step += args.num_envs
                 with torch.no_grad():
-                    actions, _, loglikes, probs = actor.get_action(torch.Tensor(obs).to(device))
+                    actions, _, loglikes, _ = actor.get_action(torch.Tensor(obs).to(device))
 
                 # TRY NOT TO MODIFY: execute the game and log data.
-                next_obs, reward, done, truncation, infos = envs.step(actions.detach().cpu().numpy())
+                next_obs, reward, done, _, infos = envs.step(actions.detach().cpu().numpy())
                 reward, obs, next_obs, done = torch.tensor(reward).to(device).view(-1), torch.Tensor(obs).to(device), torch.Tensor(next_obs).to(device), torch.Tensor(done).to(device)
 
                 rb.push(obs, next_obs, actions, reward, done, loglikes)
@@ -336,13 +329,9 @@ def main(config: dict):
                     for info in infos["final_info"]:
                         if info and "episode" in info:
                             # print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                            # writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                            # writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                            writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
+                            writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                             break
-                if done.any():
-                    # print("Step:", global_step, "reward:", np.sum(episode_reward)/(args.num_envs))
-                    # writer.add_scalar("charts/episodic_return", np.sum(episode_reward)/(args.num_envs), global_step)
-                    break
 
         # TRAINING PHASE         
         (
@@ -357,26 +346,13 @@ def main(config: dict):
         if args.saddle_point_optimization:
             sampler = ExponentiatedGradientSampler(observations.shape[0], device, eta, beta=args.beta)
             optimize_critic(eta, observations, next_observations, actions, rewards, qf, actor, args.gamma, sampler, q_optimizer, steps=args.update_epochs, loss_fn=saddle)
-        else:
-            optimize_critic(eta, observations, next_observations, actions, rewards, qf, actor, args.gamma, None, q_optimizer, steps=args.update_epochs, loss_fn=ELBE)
+        else: optimize_critic(eta, observations, next_observations, actions, rewards, qf, actor, args.gamma, None, q_optimizer, steps=args.update_epochs, loss_fn=ELBE)
 
         if args.use_kl_loss: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, qf, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=kl_loss)
         else: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, qf, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=nll_loss)
         
-        # print("Step:", T, "reward:", np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs))
-        # writer.add_scalar("charts/episodic_return", np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs), T)
-        logging_callback(np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs))
+        logging_callback(torch.sum(torch.Tensor(all_rewards))/(args.num_rollouts*args.num_envs))
         rb.reset()
-        if args.autotune:
-            actions, a_loglike, loglikes, probs = actor.get_action(torch.Tensor(observations).to(device))
-            
-            # re-use action probabilities for temperature loss
-            alpha_loss = (probs.detach() * (-log_alpha.exp() * (loglikes + target_entropy).detach())).mean()
-
-            a_optimizer.zero_grad()
-            alpha_loss.backward()
-            a_optimizer.step()
-            alpha = log_alpha.exp().item()
 
     except:
      logging_callback(-1000.0)

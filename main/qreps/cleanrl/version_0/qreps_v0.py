@@ -268,19 +268,16 @@ if __name__ == "__main__":
                     mb_inds = b_inds[start:end]
                     
                     next_observations = b_obs[b_inds[start + 1:end +1]]
-                    optimize_critic(eta, b_obs[mb_inds], next_observations, actions, rewards, agent.critic, agent.actor, args.gamma, None, critic_optimizer, steps=1, loss_fn=ELBE, max_grad_norm=None)
 
                     newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
                     new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(-1)).squeeze(-1)
 
-                    if args.saddle: loss = S(new_q_a_value, b_returns[mb_inds], sampler, newvalue, eta, args.gamma)
-                    elif args.mse_loss: loss = F.mse_loss(new_q_a_value, b_returns[mb_inds])
-                    else: loss = empirical_logistic_bellman(new_q_a_value, b_returns[mb_inds], eta, newvalue, args.gamma, args.exp_clip)
+                    loss = empirical_logistic_bellman(new_q_a_value, b_returns[mb_inds], eta, newvalue, args.gamma, args.exp_clip)
+                    if args.mse_loss: loss = F.mse_loss(new_q_a_value, b_returns[mb_inds])
                     
                     critic_optimizer.zero_grad(retain_graph=True)
                     loss.backward(retain_graph=True)
                     critic_optimizer.step()
-                    if args.saddle: sampler.update(new_q_a_value.detach(), b_returns[mb_inds])
 
             weights_after_each_epoch.append(deepcopy(agent.critic.state_dict()))
         

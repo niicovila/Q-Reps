@@ -17,11 +17,6 @@ from replay_buffer import ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
 from torch.distributions import Categorical
 
-def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
-    torch.nn.init.orthogonal_(layer.weight, std)
-    torch.nn.init.constant_(layer.bias, bias_const)
-    return layer
-
 class BestResponseSampler:
     def __init__(self, N, device, eta, beta=None):
         self.n = N
@@ -77,9 +72,6 @@ class ExponentiatedGradientSampler:
         self.z = torch.clamp(self.z / (torch.sum(self.z)), min=1e-8, max=1.0)
         self.prob_dist = Categorical(self.z)
 
-
-
-
 Q_HIST = []
 @dataclass
 class Args:
@@ -93,7 +85,7 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = True
+    track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "QREPS_LunarLander-v2"
     """the wandb's project name"""
@@ -101,13 +93,6 @@ class Args:
     """the entity (team) of wandb's project"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
-
-    save_model: bool = False
-    """whether to save model into the `runs/{run_name}` folder"""
-    upload_model: bool = False
-    """whether to upload the saved model to huggingface"""
-    hf_entity: str = ""
-    """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
     env_id: str = "LunarLander-v2"
@@ -142,12 +127,10 @@ class Args:
     """the number of epochs for the policy network"""
     beta: float = 4e-5
     """the sampler step size"""
-    autotune: bool =  False
-    """automatic tuning of the entropy coefficient"""
+
+
     q_histogram: bool = False
     """if toggled, the q function histogram will be plotted"""
-    target_entropy_scale: float = 0.5
-    """coefficient for scaling the autotune entropy target"""
     use_linear_schedule: bool = False
     """if toggled, the learning rate will decrease linearly"""
     saddle_point_optimization: bool = False
@@ -167,7 +150,6 @@ def make_env(env_id, seed, idx, capture_video, run_name):
             env = gym.make(env_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.action_space.seed(seed)
-
         return env
 
     return thunk
@@ -175,7 +157,6 @@ def make_env(env_id, seed, idx, capture_video, run_name):
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     slope = (end_e - start_e) / duration
     return max(slope * t + start_e, end_e)
-
 
 def empirical_bellman_error(observations, next_observations, actions, rewards, qf, policy, gamma):
     v_target = qf.get_values(next_observations, actions, policy)[1]
@@ -236,11 +217,11 @@ class QNetwork(nn.Module):
         self.env = env
         self.alpha = args.alpha
         self.critic = nn.Sequential(
-            layer_init(nn.Linear(np.array(env.single_observation_space.shape).prod(), 128)),
+            nn.Linear(np.array(env.single_observation_space.shape).prod(), 128),
             nn.ReLU(),
-            layer_init(nn.Linear(128, 128)),
+            nn.Linear(128, 128),
             nn.ReLU(),
-            layer_init(nn.Linear(128, env.single_action_space.n), std=1),
+            nn.Linear(128, env.single_action_space.n),
         )
 
     def forward(self, x):
@@ -262,13 +243,13 @@ class QREPSPolicy(nn.Module):
     def __init__(self, env):
         super().__init__()
         self.actor = nn.Sequential(
-            layer_init(nn.Linear(np.array(env.single_observation_space.shape).prod(), 256)),
+            nn.Linear(np.array(env.single_observation_space.shape).prod(), 256),
             nn.Tanh(),
-            layer_init(nn.Linear(256, 256)),
+            nn.Linear(256, 256),
             nn.Tanh(),
-            layer_init(nn.Linear(256, 256)),
+            nn.Linear(256, 256),
             nn.Tanh(),
-            layer_init(nn.Linear(256, env.single_action_space.n), std=0.01),
+            nn.Linear(256, env.single_action_space.n),
         )
 
     def forward(self, x):
@@ -279,7 +260,7 @@ class QREPSPolicy(nn.Module):
         policy_dist = Categorical(logits=logits)
         if action is None: action = policy_dist.sample()
         action_probs = policy_dist.probs
-        log_prob = torch.log(action_probs+1e-6)
+        log_prob = F.log_softmax(action_probs, dim=1)
         action_log_prob = policy_dist.log_prob(action)
         return action, action_log_prob, log_prob, action_probs
 
@@ -323,21 +304,15 @@ def main(args):
     actor = QREPSPolicy(envs).to(device)
     qf = QNetwork(envs, args).to(device)
 
-    q_optimizer = optim.SGD(list(qf.parameters()), lr=args.q_lr_start)
-    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr_start)
+    q_optimizer = optim.Adam(list(qf.parameters()), lr=args.q_lr_start, eps=1e-4)
+    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr_start, eps=1e-4)
 
-    if args.autotune:
-        target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
-        log_alpha = torch.zeros(1, requires_grad=True, device=device)
-        alpha = log_alpha.exp().item()
-        a_optimizer = optim.Adam([log_alpha], lr=args.q_lr_start, eps=1e-4)
-    else:
-        alpha = args.alpha
+
+    alpha = args.alpha
     if args.eta is None: eta = args.alpha
     else: eta = args.eta
 
     rb = ReplayBuffer(args.buffer_size)
-    start_time = time.time()
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -356,6 +331,8 @@ def main(args):
 
         for N in range(args.num_rollouts):
             episode_reward = []
+            obs, _ = envs.reset()
+
             for step in range(args.total_timesteps):
                 global_step += args.num_envs
                 with torch.no_grad():
@@ -373,13 +350,10 @@ def main(args):
                     for info in infos["final_info"]:
                         if info and "episode" in info:
                             # print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                            # writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                            # writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                            writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
+                            writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                             break
-                if done.any():
-                    # print("Step:", global_step, "reward:", np.sum(episode_reward)/(args.num_envs))
-                    # writer.add_scalar("charts/episodic_return", np.sum(episode_reward)/(args.num_envs), global_step)
-                    break
+
 
         # TRAINING PHASE         
         (
@@ -400,21 +374,8 @@ def main(args):
         if args.use_kl_loss: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, qf, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=kl_loss)
         else: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, qf, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=nll_loss)
         
-        print("Step:", T, "reward:", np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs))
-        writer.add_scalar("charts/episodic_return", np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs), T)
-        
+        print("Step:", T, "reward:", torch.sum(torch.Tensor(all_rewards))/(args.num_rollouts*args.num_envs))
         rb.reset()
-        if args.autotune:
-            actions, a_loglike, loglikes, probs = actor.get_action(torch.Tensor(observations).to(device))
-            
-            # re-use action probabilities for temperature loss
-            alpha_loss = (probs.detach() * (-log_alpha.exp() * (loglikes + target_entropy).detach())).mean()
-
-            a_optimizer.zero_grad()
-            alpha_loss.backward()
-            a_optimizer.step()
-            alpha = log_alpha.exp().item()
-            # qf.alpha = alpha
 
     envs.close()
     writer.close()

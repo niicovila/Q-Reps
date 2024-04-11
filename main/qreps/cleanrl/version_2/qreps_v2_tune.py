@@ -96,8 +96,6 @@ config = {
     "eta": None,
     "beta": tune.choice([0.01, 0.1, 2e-3, 2e-4, 4e-5]),
     "update_epochs": tune.choice([10, 50, 100, 300]),
-    "autotune": tune.choice([True, False]),
-    "target_entropy_scale": tune.choice([0.3, 0.5, 0.7, 0.89]),
     "saddle_point_optimization": True,
     "use_kl_loss": tune.choice([True, False]),
     "sampler": ExponentiatedGradientSampler,
@@ -267,19 +265,12 @@ def main(config):
 
     q_optimizer = optim.Adam(list(qf.parameters()), lr=args.q_lr_start, eps=1e-4)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr_start, eps=1e-4)
- 
-    if args.autotune:
-        target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
-        log_alpha = torch.zeros(1, requires_grad=True, device=device)
-        alpha = log_alpha.exp().item()
-        a_optimizer = optim.Adam([log_alpha], lr=args.q_lr_start, eps=1e-4)
-    else:
-        alpha = args.alpha
+
+    alpha = args.alpha
 
     if args.eta is None: eta = args.alpha
     else: eta = args.eta
 
-    start_time = time.time()
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -287,8 +278,6 @@ def main(config):
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs, envs.single_action_space.n)).to(device)
-    # values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    # qs = torch.zeros((args.num_steps, args.num_envs, envs.single_action_space.n)).to(device)
     next_observations = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)  # Added this line
     
     if args.eta is None: eta = args.alpha
@@ -373,7 +362,6 @@ def main(config):
                 critic_loss = torch.sum(z_n.detach() * (delta - eta * torch.log(sampler.n * z_n.detach()))) + (1 - args.gamma) * qf.get_values(b_obs, b_actions, actor)[1].mean()
             
             else: 
-                # critic_loss = ELBE(eta, b_obs[mb_inds], b_next_obs[mb_inds], b_actions[mb_inds], b_rewards[mb_inds], qf, actor, args.gamma)
                 critic_loss = eta * torch.log(torch.mean(torch.exp(delta / eta), 0)) + torch.mean((1 - args.gamma) * qf.get_values(b_obs, b_actions, actor)[1], 0)
 
             q_optimizer.zero_grad()
@@ -398,16 +386,6 @@ def main(config):
             actor_loss.backward()
             actor_optimizer.step()
 
-            if args.autotune:
-                _, _, loglikes, probs = actor.get_action(torch.Tensor(b_obs).to(device))
-                
-                # re-use action probabilities for temperature loss
-                alpha_loss = (probs.detach() * (-log_alpha.exp() * (loglikes + target_entropy).detach())).mean()
-
-                a_optimizer.zero_grad()
-                alpha_loss.backward()
-                a_optimizer.step()
-                alpha = log_alpha.exp().item()
     except:
         logging_callback(-1000)
     envs.close()

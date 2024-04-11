@@ -74,10 +74,6 @@ class Args:
     """coefficient for the kl reg"""
     update_epochs: int = 3
     """the number of epochs for the policy and value networks"""
-    autotune: bool =  False
-    """automatic tuning of the entropy coefficient"""
-    target_entropy_scale: float = 0.5
-    """coefficient for scaling the autotune entropy target"""
     beta: float = 0.01
     """coefficient for the saddle point optimization"""
     sampler_lr: float = 2.5e-4
@@ -356,14 +352,8 @@ def main(args):
 
     q_optimizer = optim.Adam(list(qf.parameters()), lr=args.q_lr_start, eps=1e-4)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr_start, eps=1e-4)
- 
-    if args.autotune:
-        target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
-        log_alpha = torch.zeros(1, requires_grad=True, device=device)
-        alpha = log_alpha.exp().item()
-        a_optimizer = optim.Adam([log_alpha], lr=args.q_lr_start, eps=1e-4)
-    else:
-        alpha = args.alpha
+
+    alpha = args.alpha
 
     if args.eta is None: eta = args.alpha
     else: eta = args.eta
@@ -486,16 +476,6 @@ def main(args):
             actor_optimizer.zero_grad()
             actor_loss.backward()
             actor_optimizer.step()
-
-            if args.autotune:
-                _, _, loglikes, probs = actor.get_action(torch.Tensor(b_obs).to(device))
-                
-                alpha_loss = (probs.detach() * (-log_alpha.exp() * (loglikes + target_entropy).detach())).mean()
-
-                a_optimizer.zero_grad()
-                alpha_loss.backward()
-                a_optimizer.step()
-                alpha = log_alpha.exp().item()
 
     envs.close()
     writer.close()
