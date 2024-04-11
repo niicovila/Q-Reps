@@ -68,6 +68,8 @@ class Args:
     """the entropy regularization coefficient"""
     eta: float = None
     """the KL regularization coefficient"""
+
+    
     parametrized: bool = True
     """if toggled, the policy will be parametrized"""
     saddle: bool = False
@@ -268,8 +270,6 @@ if __name__ == "__main__":
                     next_observations = b_obs[b_inds[start + 1:end +1]]
                     optimize_critic(eta, b_obs[mb_inds], next_observations, actions, rewards, agent.critic, agent.actor, args.gamma, None, critic_optimizer, steps=1, loss_fn=ELBE, max_grad_norm=None)
 
-
-
                     newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
                     new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(-1)).squeeze(-1)
 
@@ -298,10 +298,6 @@ if __name__ == "__main__":
                         mb_inds = b_inds[start:end]
                         with torch.no_grad():
                             newqvalue, newvalue = agent.get_value(b_obs[mb_inds])
-       
-                            # newvalue = newvalue.repeat(2,1).reshape(125, 2)
-                            # advantage = newqvalue - newvalue
-                            # advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
 
                         _, a_newlogprob, newlogprob, action_probs = agent.get_action(b_obs[mb_inds])
                         newlogprobs = torch.log(action_probs)

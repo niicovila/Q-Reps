@@ -1,0 +1,10 @@
+reward,config/num_envs,config/num_steps,config/anneal_lr,config/gamma,config/num_minibatches,config/policy_lr_start,config/q_lr_start,config/alpha,config/eta,config/update_epochs,config/autotune,config/target_entropy_scale,config/saddle_point_optimization,config/use_kl_loss,config/q_histogram,config/batch_size,config/minibatch_size,config/num_iterations
+500.0,8,128,True,0.99,8,0.0025,0.0025,4.0,,100,False,0.5,False,True,False,0,0,0
+500.0,8,128,False,0.99,16,0.0025,0.0025,4.0,,100,False,0.3,False,True,False,0,0,0
+500.0,8,128,False,0.99,4,0.0025,0.0025,2.0,,100,False,0.89,False,True,False,0,0,0
+500.0,8,128,True,0.99,4,0.0025,0.0025,6.0,,50,False,0.7,False,False,False,0,0,0
+500.0,8,128,False,0.99,4,0.0025,0.0025,2.0,,100,False,0.7,False,True,False,0,0,0
+500.0,8,128,False,0.99,4,0.0025,0.00025,2.0,,100,False,0.3,False,True,False,0,0,0
+500.0,4,128,False,0.99,4,0.0025,0.00025,1.5,,100,False,0.3,False,True,False,0,0,0
+500.0,4,128,True,0.99,4,0.0025,0.00025,4.0,,100,False,0.89,False,True,False,0,0,0
+500.0,4,128,False,0.99,4,0.0025,0.00025,2.0,,100,False,0.89,False,True,False,0,0,0

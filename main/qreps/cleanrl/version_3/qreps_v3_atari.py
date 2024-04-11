@@ -47,21 +47,16 @@ class Args:
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
-    save_model: bool = False
-    """whether to save model into the `runs/{run_name}` folder"""
-    upload_model: bool = False
-    """whether to upload the saved model to huggingface"""
-    hf_entity: str = ""
-    """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
     env_id: str = "BeamRiderNoFrameskip-v4"
     """the id of the environment"""
+    
     total_timesteps: int = 256
     """total timesteps of the experiments"""
     num_updates: int = 30
     """the number of updates"""
-    num_rollouts: int = 5
+    num_rollouts: int = 2
     """the number of rollouts before each update"""
     num_envs: int = 1
     """the number of parallel game environments"""
@@ -77,14 +72,15 @@ class Args:
     """Entropy regularization coefficient."""
     eta = None
     """coefficient for the kl reg"""
-    update_epochs: int = 100
+    update_epochs: int = 2
     """the number of epochs for the policy and value networks"""
-    update_policy_epochs: int = 300
+    update_policy_epochs: int = 2
     """the number of epochs for the policy network"""
     autotune: bool =  True
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
+
     use_linear_schedule: bool = True
     """if toggled, the learning rate will decrease linearly"""
     saddle_point_optimization: bool = False
@@ -314,7 +310,7 @@ def main(args):
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "mps")
 
     # env setup
     envs = gym.vector.SyncVectorEnv(
@@ -371,7 +367,7 @@ def main(args):
                 
                 # TRY NOT TO MODIFY: execute the game and log data.
                 next_obs, reward, done, truncation, info = envs.step(action.cpu().numpy())
-                reward, obs, next_obs, done = torch.tensor(reward).to(device).view(-1), torch.Tensor(obs).to(device), torch.Tensor(next_obs).to(device), torch.Tensor(done).to(device)
+                reward, obs, next_obs, done = torch.tensor(reward, dtype=torch.float32).to(device).view(-1), torch.Tensor(obs).to(device), torch.Tensor(next_obs).to(device), torch.Tensor(done).to(device)
                 
                 rb.push(obs, next_obs, action, reward, done, loglikes)
                 
@@ -379,7 +375,6 @@ def main(args):
                 all_rewards.append(reward)
                 episode_reward.append(reward)
                 if done.any():
-                    # print("Step:", global_step, "reward:", np.sum([ep_reward.cpu().numpy() for ep_reward in episode_reward])/(args.num_envs))
                     break
 
         # TRAINING PHASE         
@@ -402,7 +397,7 @@ def main(args):
         else: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, qf, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=nll_loss)
         rb.reset()
          
-        print("Iteation:", T, "reward:", np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs))
+        print("Iteation:", T, "reward:", torch.sum(torch.Tensor(all_rewards))/(args.num_rollouts*args.num_envs))
         writer.add_scalar("charts/episodic_return", np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs), T)
 
         

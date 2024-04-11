@@ -8,10 +8,17 @@ import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import tyro
 from torch.utils.tensorboard import SummaryWriter
 from torch.distributions import Categorical
-
+from stable_baselines3.common.atari_wrappers import (  # isort:skip
+    ClipRewardEnv,
+    EpisodicLifeEnv,
+    FireResetEnv,
+    MaxAndSkipEnv,
+    NoopResetEnv,
+)
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
@@ -30,7 +37,7 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = True
+    track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "QREPS_LunarLander-v2"
     """the wandb's project name"""
@@ -40,19 +47,18 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "CartPole-v1"
+    env_id: str = "ALE/Breakout-v5"
     """the id of the environment"""
-    total_timesteps: int = 50000
+    total_timesteps: int = 500000
     """total timesteps of the experiments"""
     num_envs: int = 4
     """the number of parallel game environments"""
-    num_steps: int = 256
+    num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
     gamma: float = 0.99
     """the discount factor gamma"""
     num_minibatches: int = 8
     """the number of mini-batches"""
-
     policy_lr_start: float = 0.00025
     """the learning rate of the policy network optimizer"""
     q_lr_start: float = 0.00100
@@ -61,14 +67,14 @@ class Args:
     """Entropy regularization coefficient."""
     eta = None
     """coefficient for the kl reg"""
-    update_epochs: int = 100
+    update_epochs: int = 2
     """the number of epochs for the policy and value networks"""
     autotune: int =  False
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.7
     """coefficient for scaling the autotune entropy target"""
     
-    saddle_point_optimization: int = False
+    saddle_point_optimization: int =   True
     """if toggled, the saddle point optimization will be used"""
     use_kl_loss: int = True
     """if toggled, the kl loss will be used"""
@@ -86,7 +92,7 @@ class Args:
     """the number of iterations (computed in runtime)"""
 
 
-def make_env(env_id, seed, idx, capture_video, run_name):
+def make_env(env_id, idx, capture_video, run_name):
     def thunk():
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array")
@@ -94,11 +100,22 @@ def make_env(env_id, seed, idx, capture_video, run_name):
         else:
             env = gym.make(env_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        env.action_space.seed(seed)
-
+        env = NoopResetEnv(env, noop_max=30)
+        env = MaxAndSkipEnv(env, skip=4)
+        env = EpisodicLifeEnv(env)
+        if "FIRE" in env.unwrapped.get_action_meanings():
+            env = FireResetEnv(env)
+        env = ClipRewardEnv(env)
+        env = gym.wrappers.ResizeObservation(env, (84, 84))
+        env = gym.wrappers.GrayScaleObservation(env)
+        env = gym.wrappers.FrameStack(env, 4)
         return env
 
     return thunk
+
+def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
+    slope = (end_e - start_e) / duration
+    return max(slope * t + start_e, end_e)
 
 class ExponentiatedGradientSampler:
     def __init__(self, N, device, eta, beta=0.01):
@@ -130,7 +147,21 @@ class ExponentiatedGradientSampler:
         self.z = torch.clamp(self.z / (torch.sum(self.z)), min=1e-8, max=1.0)
         self.prob_dist = Categorical(self.z)
 
+def empirical_bellman_error(observations, next_observations, actions, rewards, qf, policy, gamma):
+    v_target = qf.get_values(next_observations, actions, policy)[1]
+    q_features = qf.get_values(observations, actions, policy)[0]
+    output = rewards.flatten() + gamma * v_target - q_features
+    return output
 
+def saddle(eta, observations, next_observations, actions, rewards, qf, policy, gamma, sampler):
+    errors = torch.sum(sampler.probs().detach() * (empirical_bellman_error(observations, next_observations, actions, rewards, qf, policy, gamma) - eta * torch.log(sampler.n * sampler.probs().detach()))) + (1 - gamma) * qf.get_values(observations, actions, policy)[1].mean()
+    return errors
+
+def ELBE(eta, observations, next_observations, actions, rewards, qf, policy, gamma, sampler=None):
+    errors = eta * torch.logsumexp(
+        empirical_bellman_error(observations, next_observations, actions, rewards, qf, policy, gamma) / eta, 0
+    ) + torch.mean((1 - gamma) * qf.get_values(observations, actions, policy)[1], 0)
+    return errors
 
 def nll_loss(alpha, observations, next_observations, rewards, actions, log_likes, q_net, policy):
     weights = torch.clamp(q_net.get_values(observations, actions, policy)[0] / alpha, -20, 20)
@@ -145,6 +176,30 @@ def kl_loss(alpha, observations, next_observations, rewards, actions, log_likes,
     actor_loss = torch.mean(probs * (alpha * (newlogprob-log_likes.detach()) - advantage.detach()))
     return actor_loss
 
+def optimize_critic(eta, observations, next_observations, actions, rewards, q_net, policy, gamma, sampler, optimizer, steps=300, loss_fn=ELBE, max_grad_norm=None):
+    def closure():
+        optimizer.zero_grad()
+        loss = loss_fn(eta, observations, next_observations, actions, rewards, q_net , policy, gamma, sampler)
+        loss.backward()
+        if sampler is not None: sampler.update(empirical_bellman_error(observations, next_observations, actions, rewards, q_net, policy, gamma))
+        if max_grad_norm is not None: nn.utils.clip_grad_norm_([param for group in optimizer.param_groups for param in group['params']], max_grad_norm)
+        return loss
+
+    for i in range(steps):
+        optimizer.step(closure)
+
+def optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, q_net, policy, optimizer, steps=300, loss_fn=nll_loss, max_grad_norm=None):
+    def closure():
+        optimizer.zero_grad()
+        loss = loss_fn(alpha, observations, next_observations, rewards, actions, log_likes, q_net, policy)
+        loss.backward()
+
+        if max_grad_norm is not None: nn.utils.clip_grad_norm_([param for group in optimizer.param_groups for param in group['params']], max_grad_norm)
+
+        return loss
+
+    for i in range(steps):
+        optimizer.step(closure)
 
 # ALGO LOGIC: initialize agent here:
 class QNetwork(nn.Module):
@@ -152,16 +207,24 @@ class QNetwork(nn.Module):
         super().__init__()
         self.env = env
         self.alpha = args.alpha
+        self.network = nn.Sequential(
+            layer_init(nn.Conv2d(4, 32, 8, stride=4)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(32, 64, 4, stride=2)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(64, 64, 3, stride=1)),
+            nn.ReLU(),
+            nn.Flatten(),
+            layer_init(nn.Linear(64 * 7 * 7, 512)),
+            nn.ReLU(),
+        )
         self.critic = nn.Sequential(
-            layer_init(nn.Linear(np.array(env.single_observation_space.shape).prod(), 128)),
-            nn.ReLU(),
-            layer_init(nn.Linear(128, 128)),
-            nn.ReLU(),
-            layer_init(nn.Linear(128, env.single_action_space.n), std=1),
+            self.network,
+            layer_init(nn.Linear(512, env.single_action_space.n), std=1),
         )
 
     def forward(self, x):
-        return self.critic(x)
+        return self.critic(x / 255.0)
     
     def get_values(self, x, action=None, policy=None):
         q = self(x)
@@ -178,25 +241,31 @@ class QNetwork(nn.Module):
 class QREPSPolicy(nn.Module):
     def __init__(self, env):
         super().__init__()
+        self.network = nn.Sequential(
+            layer_init(nn.Conv2d(4, 32, 8, stride=4)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(32, 64, 4, stride=2)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(64, 64, 3, stride=1)),
+            nn.ReLU(),
+            nn.Flatten(),
+            layer_init(nn.Linear(64 * 7 * 7, 512)),
+            nn.ReLU(),
+        )
         self.actor = nn.Sequential(
-            layer_init(nn.Linear(np.array(env.single_observation_space.shape).prod(), 256)),
-            nn.Tanh(),
-            layer_init(nn.Linear(256, 256)),
-            nn.Tanh(),
-            layer_init(nn.Linear(256, 256)),
-            nn.Tanh(),
-            layer_init(nn.Linear(256, env.single_action_space.n), std=0.01),
+            self.network,
+            layer_init(nn.Linear(512, env.single_action_space.n), std=0.01),
         )
 
     def forward(self, x):
-        return self.actor(x)
+        return self.actor(x / 255.0)
 
     def get_action(self, x, action=None):
         logits = self(x)
         policy_dist = Categorical(logits=logits)
         if action is None: action = policy_dist.sample()
         action_probs = policy_dist.probs
-        log_prob = torch.log(action_probs+1e-6)
+        log_prob = F.log_softmax(logits, dim=1)
         action_log_prob = policy_dist.log_prob(action)
         return action, action_log_prob, log_prob, action_probs
     
@@ -258,13 +327,13 @@ def main(args):
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "mps")
 
     # env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name) for i in range(args.num_envs)]
+        [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
     )
-    # assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     actor = QREPSPolicy(envs).to(device)
     qf = QNetwork(envs, args).to(device)
@@ -337,9 +406,9 @@ def main(args):
             next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
 
             next_done = np.logical_or(terminations, truncations)
-            rewards[step] = torch.tensor(reward).to(device).view(-1)
-            reward = torch.tensor(reward).to(device).view(-1)
-            next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device)
+            rewards[step] = torch.tensor(reward, dtype=torch.float32).to(device).view(-1)
+            reward = torch.tensor(reward, dtype=torch.float32).to(device).view(-1)
+            next_obs, next_done = torch.Tensor(next_obs).to(device).float(), torch.Tensor(next_done).to(device).float()
             
             next_observations[step] = next_obs
             # reward_iteration.append(reward)
@@ -362,7 +431,7 @@ def main(args):
         b_inds = np.arange(args.batch_size)
 
         if len(reward_iteration)>0: 
-            print("Iteration:", iteration, "Reward:", np.mean(reward_iteration))
+            print("Iteration:", iteration, "Reward:", torch.mean(torch.Tensor(reward_iteration)))
 
         for epoch in range(args.update_epochs):
             np.random.shuffle(b_inds)
