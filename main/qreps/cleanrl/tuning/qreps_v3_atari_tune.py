@@ -364,7 +364,7 @@ def main(config: dict):
         ) = rb.get_all()
 
         if args.saddle_point_optimization:
-            sampler = ExponentiatedGradientSampler(observations.shape[0], device, eta, beta=0.01)
+            sampler = ExponentiatedGradientSampler(observations.shape[0], device, eta, beta=args.beta)
             optimize_critic(eta, observations, next_observations, actions, rewards, qf, actor, args.gamma, sampler, q_optimizer, steps=args.update_epochs, loss_fn=saddle)
         else:
             optimize_critic(eta, observations, next_observations, actions, rewards, qf, actor, args.gamma, None, q_optimizer, steps=args.update_epochs, loss_fn=ELBE)
@@ -373,7 +373,7 @@ def main(config: dict):
         else: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, qf, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=nll_loss)
         rb.reset()
          
-        writer.add_scalar("charts/episodic_return", np.sum([rew.cpu().numpy() for rew in all_rewards])/(args.num_rollouts*args.num_envs), T)
+        writer.add_scalar("charts/episodic_return", torch.sum(torch.Tensor(all_rewards))/(args.num_rollouts*args.num_envs), T)
         logging_callback(torch.sum(torch.Tensor(all_rewards))/(args.num_rollouts*args.num_envs))
         
 
