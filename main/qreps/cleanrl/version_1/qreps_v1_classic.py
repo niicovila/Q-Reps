@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import gymnasium as gym
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import tyro
@@ -22,7 +23,7 @@ Q_HIST = []
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    seed: int = 0
+    seed: int = 2
     """seed of the experiment"""
     run_multiple_seeds: bool = False
     """if toggled, this script will run with multiple seeds"""
@@ -30,7 +31,7 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = True
+    track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "QREPS_LunarLander-v2"
     """the wandb's project name"""
@@ -42,26 +43,26 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 50000
+    total_timesteps: int = 100000
     """total timesteps of the experiments"""
     num_envs: int = 4
     """the number of parallel game environments"""
-    num_steps: int = 256
+    num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
     gamma: float = 0.99
     """the discount factor gamma"""
-    num_minibatches: int = 8
+    num_minibatches: int = 16
     """the number of mini-batches"""
 
-    policy_lr_start: float = 0.00025
+    policy_lr_start: float = 0.0025
     """the learning rate of the policy network optimizer"""
-    q_lr_start: float = 0.00100
+    q_lr_start: float = 0.0003
     """the learning rate of the Q network network optimizer"""
-    alpha: float = 6.0
+    alpha: float = 2.0
     """Entropy regularization coefficient."""
     eta = None
     """coefficient for the kl reg"""
-    update_epochs: int = 100
+    update_epochs: int = 50
     """the number of epochs for the policy and value networks"""
 
     
@@ -71,7 +72,7 @@ class Args:
     """if toggled, the kl loss will be used"""
     q_histogram: int = False
     """if toggled, the q function histogram will be plotted"""
-    anneal_lr: int = True
+    anneal_lr: int =  True
     """if toggled, the learning rate will decrease linearly"""
 
     # to be filled in runtime
@@ -217,11 +218,11 @@ class Sampler(nn.Module):
         sampler_dist = Categorical(logits=logits)
         return sampler_dist.probs
     
-def main(args):
+if __name__ == "__main__":
     import torch
     import torch.nn as nn
     import torch.optim as optim
-    
+    args = tyro.cli(Args)
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
 
 
@@ -243,6 +244,7 @@ def main(args):
             monitor_gym=True,
             save_code=True,
         )
+    
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
@@ -265,19 +267,18 @@ def main(args):
 
     actor = QREPSPolicy(envs).to(device)
     qf = QNetwork(envs, args).to(device)
+
     if args.saddle_point_optimization:
         sampler = Sampler(N=args.minibatch_size).to(device)
-        sampler_optimizer = optim.Adam(list(sampler.parameters()), lr=args.policy_lr_start, eps=1e-5)
+        sampler_optimizer = optim.Adam(list(sampler.parameters()), lr=args.policy_lr_start, eps=1e-4)
 
 
     q_optimizer = optim.Adam(list(qf.parameters()), lr=args.q_lr_start, eps=1e-4)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr_start, eps=1e-4)
-    alpha = args.alpha
 
+    alpha = args.alpha
     if args.eta is None: eta = args.alpha
     else: eta = args.eta
-
-    start_time = time.time()
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -285,21 +286,18 @@ def main(args):
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs, envs.single_action_space.n)).to(device)
-    # values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    # qs = torch.zeros((args.num_steps, args.num_envs, envs.single_action_space.n)).to(device)
-    next_observations = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)  # Added this line
+    next_observations = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device) 
     
     if args.eta is None: eta = args.alpha
     else: eta = torch.Tensor([args.eta]).to(device)
     
     # TRY NOT TO MODIFY: start the game
     global_step = 0
-    start_time = time.time()
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
+    rewards_df = pd.DataFrame(columns=["Step", "Reward"])
 
-    print("Total Iterations: ", args.num_iterations, "seed:", args.seed)
     for iteration in range(1, args.num_iterations + 1):
         reward_iteration = []
         # Annealing the rate if instructed to do so.
@@ -335,11 +333,16 @@ def main(args):
             # reward_iteration.append(reward)
 
             if "final_info" in infos:
+                rs = []
                 for info in infos["final_info"]:
                     if info and "episode" in info:
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                         writer.add_scalar("charts/episodic_return", info['episode']['r'], global_step)
                         reward_iteration.append(info["episode"]["r"])
+                        rs.append(info["episode"]["r"])
+
+                if len(rs)>0:
+                    rewards_df = rewards_df._append({"Step": global_step, "Reward": np.mean(rs)}, ignore_index=True)
 
         
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
@@ -367,7 +370,6 @@ def main(args):
                         critic_loss = torch.sum(z_n.detach() * (delta - eta * torch.log(sampler.n * z_n.detach()))) + (1 - args.gamma) * qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[1].mean()
                     
                     else: 
-                        # critic_loss = ELBE(eta, b_obs[mb_inds], b_next_obs[mb_inds], b_actions[mb_inds], b_rewards[mb_inds], qf, actor, args.gamma)
                         critic_loss = eta * torch.log(torch.mean(torch.exp(delta / eta), 0)) + torch.mean((1 - args.gamma) * qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[1], 0)
 
                     q_optimizer.zero_grad()
@@ -388,22 +390,6 @@ def main(args):
                     actor_loss.backward()
                     actor_optimizer.step()
    
-
+    rewards_df.to_csv(f"rewards_{run_name}.csv")
     envs.close()
     writer.close()
-
-# ### HP SEARCH
-args = tyro.cli(Args)
-
-if args.run_multiple_seeds:
-    rewards = []
-    n_seeds = 10
-
-    for i in range(n_seeds):
-        args.seed = i
-        reward = main(args)
-        rewards.append(reward)
-    print("Average reward:", np.mean(rewards), "stddev:", np.std(rewards))
-
-else:
-    reward = main(args)
