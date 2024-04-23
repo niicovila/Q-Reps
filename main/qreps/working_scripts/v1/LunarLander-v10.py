@@ -36,19 +36,12 @@ class Args:
     """if toggled, cuda will be enabled by default"""
     track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "QREPS_LunarLander-v2"
+    wandb_project_name: str = "QREPS_Benchmark"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
-    capture_video: bool = True
+    capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
-
-    save_model: bool = False
-    """whether to save model into the `runs/{run_name}` folder"""
-    upload_model: bool = False
-    """whether to upload the saved model to huggingface"""
-    hf_entity: str = ""
-    """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
     env_id: str = "LunarLander-v2"
@@ -353,8 +346,6 @@ def main(args):
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs, envs.single_action_space.n)).to(device)
-    # values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    # qs = torch.zeros((args.num_steps, args.num_envs, envs.single_action_space.n)).to(device)
     next_observations = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)  # Added this line
     
     if args.eta is None: eta = args.alpha
@@ -367,7 +358,7 @@ def main(args):
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
-    print("Total Iterations: ", args.num_iterations)
+    rewards_df = pd.DataFrame(columns=["Step", "Reward"])
     for iteration in range(1, args.num_iterations + 1):
         reward_iteration = []
         # Annealing the rate if instructed to do so.
@@ -403,11 +394,15 @@ def main(args):
             # reward_iteration.append(reward)
 
             if "final_info" in infos:
+                rs = []
                 for info in infos["final_info"]:
                     if info and "episode" in info:
-                        # print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
+                        writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                         reward_iteration.append(info["episode"]["r"])
+                        rs.append(info["episode"]["r"])
+                if len(rs)>0:
+                    rewards_df = rewards_df._append({"Step": global_step, "Reward": np.mean(rs)}, ignore_index=True)
 
         
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
@@ -420,8 +415,7 @@ def main(args):
         b_inds = np.arange(args.batch_size)
 
         if len(reward_iteration)>0: 
-            print("Iteration:", iteration, "Reward:", np.mean(reward_iteration))
-            writer.add_scalar("charts/episodic_return", np.mean(reward_iteration), global_step)
+            print(f"Iteration {global_step}: ", " Reward: ", np.mean(reward_iteration))
 
         for epoch in range(args.update_epochs):
             np.random.shuffle(b_inds)
@@ -467,7 +461,8 @@ def main(args):
                         alpha_loss.backward()
                         a_optimizer.step()
                         alpha = log_alpha.exp().item()
-
+    
+    rewards_df.to_csv(f"rewards_{run_name}.csv")
     envs.close()
     writer.close()
 

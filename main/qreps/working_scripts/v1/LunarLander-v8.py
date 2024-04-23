@@ -34,26 +34,19 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
+    track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "QREPS_LunarLander-v2"
+    wandb_project_name: str = "QREPS_Benchmark"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
-    save_model: bool = False
-    """whether to save model into the `runs/{run_name}` folder"""
-    upload_model: bool = False
-    """whether to upload the saved model to huggingface"""
-    hf_entity: str = ""
-    """the user or org name of the model repository from the Hugging Face Hub"""
-
     # Algorithm specific arguments
     env_id: str = "LunarLander-v2"
     """the id of the environment"""
-    total_timesteps: int = 100000
+    total_timesteps: int = 500000
     """total timesteps of the experiments"""
     num_envs: int = 4
     """the number of parallel game environments"""
@@ -74,10 +67,6 @@ class Args:
     """coefficient for the kl reg"""
     update_epochs: int = 50
     """the number of epochs for the policy and value networks"""
-    autotune: bool =  False
-    """automatic tuning of the entropy coefficient"""
-    target_entropy_scale: float = 0.5
-    """coefficient for scaling the autotune entropy target"""
     
     saddle_point_optimization: bool = False
     """if toggled, the saddle point optimization will be used"""
@@ -334,18 +323,11 @@ def main(args):
     q_optimizer = optim.Adam(list(qf.parameters()), lr=args.q_lr_start, eps=1e-4)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr_start, eps=1e-4)
  
-    if args.autotune:
-        target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
-        log_alpha = torch.zeros(1, requires_grad=True, device=device)
-        alpha = log_alpha.exp().item()
-        a_optimizer = optim.Adam([log_alpha], lr=args.q_lr_start, eps=1e-4)
-    else:
-        alpha = args.alpha
 
+    alpha = args.alpha
     if args.eta is None: eta = args.alpha
-    else: eta = args.eta
+    else: eta = torch.Tensor([args.eta]).to(device)
 
-    start_time = time.time()
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -353,24 +335,21 @@ def main(args):
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs, envs.single_action_space.n)).to(device)
-    # values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    # qs = torch.zeros((args.num_steps, args.num_envs, envs.single_action_space.n)).to(device)
     next_observations = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)  # Added this line
-    
-    if args.eta is None: eta = args.alpha
-    else: eta = torch.Tensor([args.eta]).to(device)
     
     # TRY NOT TO MODIFY: start the game
     global_step = 0
-    start_time = time.time()
+
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
+    
     rewards_df = pd.DataFrame(columns=["Step", "Reward"])
     print("Total Iterations: ", args.num_iterations, "seed:", args.seed)
     for iteration in range(1, args.num_iterations + 1):
-        reward_iteration = []
         # Annealing the rate if instructed to do so.
+        reward_iteration = []
+
         if args.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.policy_lr_start
@@ -406,8 +385,8 @@ def main(args):
                 rs = []
                 for info in infos["final_info"]:
                     if info and "episode" in info:
-                        # print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                        writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         reward_iteration.append(info["episode"]["r"])
                         rs.append(info["episode"]["r"])
 
@@ -425,8 +404,7 @@ def main(args):
         b_inds = np.arange(args.batch_size)
 
         if len(reward_iteration)>0: 
-            print("Iteration:", iteration, "Reward:", np.mean(reward_iteration))
-            writer.add_scalar("charts/episodic_return", np.mean(reward_iteration), global_step)
+            print(f"Iteration {global_step}: ", " Reward: ", np.mean(reward_iteration))
 
         for epoch in range(args.update_epochs):
             np.random.shuffle(b_inds)
@@ -461,18 +439,8 @@ def main(args):
                     actor_optimizer.zero_grad()
                     actor_loss.backward()
                     actor_optimizer.step()
-   
-                    if args.autotune:
-                        _, _, loglikes, probs = actor.get_action(torch.Tensor(b_obs[mb_inds]).to(device))
-                        
-                        # re-use action probabilities for temperature loss
-                        alpha_loss = (probs.detach() * (-log_alpha.exp() * (loglikes + target_entropy).detach())).mean()
 
-                        a_optimizer.zero_grad()
-                        alpha_loss.backward()
-                        a_optimizer.step()
-                        alpha = log_alpha.exp().item()
-
+    rewards_df.to_csv(f"rewards_{run_name}.csv")
     envs.close()
     writer.close()
 

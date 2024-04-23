@@ -40,15 +40,8 @@ class Args:
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
-    capture_video: bool = True
+    capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
-
-    save_model: bool = False
-    """whether to save model into the `runs/{run_name}` folder"""
-    upload_model: bool = False
-    """whether to upload the saved model to huggingface"""
-    hf_entity: str = ""
-    """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
     env_id: str = "LunarLander-v2"
@@ -83,9 +76,7 @@ class Args:
     """the number of epochs for the policy network"""
     beta: float = 4e-5
     """the sampler step size"""
-    autotune: bool =  False
-    """automatic tuning of the entropy coefficient"""
-    target_entropy_scale: float = 0.2000
+
     """coefficient for scaling the autotune entropy target"""
     use_linear_schedule: bool = True
     """if toggled, the learning rate will decrease linearly"""
@@ -251,8 +242,6 @@ class QREPSPolicy(nn.Module):
 
 
 def main(args):
-    import stable_baselines3 as sb3
-
     # assert args.num_envs == 1, "vectorized envs are not supported at the moment"
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     if args.track:
@@ -293,18 +282,11 @@ def main(args):
     q_optimizer = optim.SGD(list(qf.parameters()), lr=args.q_lr)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
 
-    if args.autotune:
-        target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
-        log_alpha = torch.zeros(1, requires_grad=True, device=device)
-        alpha = log_alpha.exp().item()
-        a_optimizer = optim.Adam([log_alpha], lr=args.q_lr, eps=1e-4)
-    else:
-        alpha = args.alpha
+    alpha = args.alpha
     if args.eta is None: eta = args.alpha
     else: eta = args.eta
 
     rb = ReplayBuffer(args.buffer_size)
-    start_time = time.time()
 
     # TRY NOT TO MODIFY: start the game
     
@@ -357,20 +339,9 @@ def main(args):
         print("Iteation:", T, "reward:", np.sum(all_rewards)/(args.num_rollouts*args.num_envs))
         writer.add_scalar("charts/episodic_return", np.sum(all_rewards)/(args.num_rollouts*args.num_envs), T)
 
-        
-        if args.autotune:
-            actions, a_loglike, loglikes, probs = actor.get_action(torch.Tensor(obs).to(device))
-            # re-use action probabilities for temperature loss
-            alpha_loss = (probs.detach() * (-log_alpha.exp() * (loglikes + target_entropy).detach())).mean()
-
-            a_optimizer.zero_grad()
-            alpha_loss.backward()
-            a_optimizer.step()
-            alpha = log_alpha.exp().item()
 
     envs.close()
     writer.close()
-    return np.sum(all_rewards)/(args.num_rollouts*args.num_envs)
 
 # ### HP SEARCH
 args = tyro.cli(Args)
@@ -387,45 +358,3 @@ if args.run_multiple_seeds:
 
 else:
     main(args)
-
-# use_linear_schedule = False # False
-# saddle_point_optimization = True # False
-# use_kl_loss = True # True
-
-# alphas = [0.2, 2, 3, 5]
-# q_lrs = [0.1, 2.5e-2, 2.5e-3]
-# policy_lrs = [0.1, 2.5e-2, 2.5e-3]
-
-# update_epochs = 100
-# update_policy_epochs = 300
-# gammas = 0.99
-# num_envs = 4
-# num_rollouts = 5
-
-# results = []
-
-# for alpha, q_lr, policy_lr in itertools.product(alphas, q_lrs, policy_lrs):
-#     args.alpha = alpha
-#     args.q_lr = q_lr
-#     args.policy_lr = policy_lr
-#     args.update_epochs = update_epochs
-#     args.update_policy_epochs = update_policy_epochs
-#     args.gamma = gammas
-#     args.num_envs = num_envs
-#     args.num_rollouts = num_rollouts
-#     args.use_kl_loss = use_kl_loss
-#     args.use_linear_schedule = use_linear_schedule
-#     args.saddle_point_optimization = saddle_point_optimization
-
-#     try: 
-#         print("Iteration with hyperparameters:", alpha, q_lr, policy_lr)
-#         reward = main(args)
-#         results.append((alpha, q_lr, policy_lr, reward))
-#     except:
-#         pass
-
-# best_combination = max(results, key=lambda x: x[3])
-# print("Best combination:", best_combination)
-
-# df = pd.DataFrame(results, columns=["Alpha", "Q Learning Rate", "Policy Learning Rate", "Reward"])
-# df.to_csv("results_qreps_elbe_nll_lunar_lander.csv", index=False)

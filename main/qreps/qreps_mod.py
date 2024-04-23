@@ -26,7 +26,7 @@ Q_HIST = []
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    seed: int = 3
+    seed: int = 1
     """seed of the experiment"""
     run_multiple_seeds: bool = False
     """if toggled, this script will run with multiple seeds"""
@@ -34,50 +34,60 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = True
+    track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "QREPS_Benchmark"
+    wandb_project_name: str = "CartPole-v1-QREPS-Benchmark"
     """the wandb's project name"""
-    wandb_entity: str = None
+    wandb_entity = None
     """the entity (team) of wandb's project"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "LunarLander-v2"
+    env_id: str = "CartPole-v1"
     """the id of the environment"""
     total_timesteps: int = 100000
     """total timesteps of the experiments"""
-    num_envs: int = 8
+    num_envs: int = 4
     """the number of parallel game environments"""
     num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
     gamma: float = 0.99
     """the discount factor gamma"""
-
-    policy_lr_start: float = 0.002733279992400991
-    """the learning rate of the policy network optimizer"""
-    q_lr_start: float = 0.0017933066846251378
+    q_lr_start: float = 2.5e-4
     """the learning rate of the Q network network optimizer"""
-    alpha: float = 6.0
-    """Entropy regularization coefficient."""
-    eta = None
-    """coefficient for the kl reg"""
-    update_epochs: int = 50
-    """the number of epochs for the policy and value networks"""
-    beta: float = 0.001108639760774968
+    beta: float = 3e-4
     """coefficient for the saddle point optimization"""
+    update_epochs: int = 10
+    """the number of epochs for the policy and value networks"""
+
     
-    anneal_lr: bool = True
+    # Network params
+    q_activation: str = "Tanh"
+    """the activation function of the Q network"""
+    q_hidden_size: int = 128
+    """the hidden size of the Q network"""
+    q_num_hidden_layers: int = 2
+    """the number of hidden layers of the Q network"""
+
+    target_network_frequency: int = 2
+    """the frequency of updating the target network"""
+    tau: float = 1.0
+    """the soft update coefficient"""
+
+    # Optimizer params
+    q_optimizer: str = "SGD"
+    """the optimizer of the Q network"""
+    eps: float = 1e-4
+    """the epsilon value for the optimizer"""
+
+    # Options
+    anneal_lr: bool = False
     """if toggled, the learning rate will decrease linearly"""
-    saddle_point_optimization: bool = True
-    """if toggled, the saddle point optimization will be used"""
-    parametrized_sampler: bool = True
-    """if toggled, the sampler will be parametrized"""
-    use_kl_loss: bool = True
-    """if toggled, the kl loss will be used"""
     q_histogram: bool = False
     """if toggled, the q function histogram will be plotted"""
+    target_network: bool = False
+    """if toggled, the target network will be used"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -97,30 +107,19 @@ def make_env(env_id, seed, idx, capture_video, run_name):
         return env
     return thunk
 
-def nll_loss(alpha, observations, next_observations, rewards, actions, log_likes, q_net, policy):
-    weights = torch.clamp(q_net.get_values(observations, actions, policy)[0] / alpha, -20, 20)
-    _, log_likes, _, _ = policy.get_action(observations, actions)
-    nll = -torch.mean(torch.exp(weights.detach()) * log_likes)
-    return nll
-
-def kl_loss(alpha, observations, next_observations, rewards, actions, log_likes, q_net, policy):
-    _, _, newlogprob, probs = policy.get_action(observations, actions)
-    q_values, v = q_net.get_values(observations, policy=policy)
-    advantage = q_values - v.unsqueeze(1)
-    actor_loss = torch.mean(probs * (alpha * (newlogprob-log_likes.detach()) - advantage.detach()))
-    return actor_loss
-
 class QNetwork(nn.Module):
     def __init__(self, env, args):
         super().__init__()
         self.env = env
-        self.alpha = args.alpha
+
         self.critic = nn.Sequential(
-            layer_init(nn.Linear(np.array(env.single_observation_space.shape).prod(), 128)),
-            nn.ReLU(),
-            layer_init(nn.Linear(128, 128)),
-            nn.ReLU(),
-            layer_init(nn.Linear(128, env.single_action_space.n), std=1),
+            nn.Linear(np.array(env.single_observation_space.shape).prod(), args.q_hidden_size),
+            getattr(nn, args.q_activation)(),
+            *[layer for _ in range(args.q_num_hidden_layers) for layer in (
+                nn.Linear(args.q_hidden_size, args.q_hidden_size),
+                getattr(nn, args.q_activation)()
+            )],
+            nn.Linear(args.q_hidden_size, env.single_action_space.n),
         )
 
     def forward(self, x):
@@ -128,60 +127,27 @@ class QNetwork(nn.Module):
     
     def get_values(self, x, action=None, policy=None):
         q = self(x)
-        z = q / self.alpha
-        if policy is None: pi_k = torch.ones(x.shape[0], self.env.single_action_space.n, device=x.device) / self.env.single_action_space.n
-        else: _, _, _, pi_k = policy.get_action(x); pi_k = pi_k.detach()
-        v = self.alpha * (torch.log(torch.sum(pi_k * torch.exp(z), dim=1))).squeeze(-1)
+        _, probs = policy.get_action(x)
+        v = (torch.sum(probs * q, dim=1)).squeeze(-1)
         if action is None:
             return q, v
         else:
             q = q.gather(-1, action.unsqueeze(-1).long()).squeeze(-1)
             return q, v
     
-class QREPSPolicy(nn.Module):
-    def __init__(self, env):
-        super().__init__()
-        self.actor = nn.Sequential(
-            layer_init(nn.Linear(np.array(env.single_observation_space.shape).prod(), 256)),
-            nn.Tanh(),
-            layer_init(nn.Linear(256, 256)),
-            nn.Tanh(),
-            layer_init(nn.Linear(256, 256)),
-            nn.Tanh(),
-            layer_init(nn.Linear(256, env.single_action_space.n), std=0.01),
-        )
+class Policy:
+    def __init__(self, q):
+        self.q = q
 
-    def forward(self, x):
-        return self.actor(x)
-
-    def get_action(self, x, action=None):
-        logits = self(x)
-        policy_dist = Categorical(logits=logits)
-        if action is None: action = policy_dist.sample()
-        action_probs = policy_dist.probs
-        log_prob = torch.log(action_probs+1e-6)
-        action_log_prob = policy_dist.log_prob(action)
-        return action, action_log_prob, log_prob, action_probs
+    def set_q(self, q):
+        self.q = q
     
-class Sampler(nn.Module):
-    def __init__(self, N):
-        super().__init__()
-        self.n = N
-        self.z = nn.Sequential(
-            layer_init(nn.Linear(N, 56)),
-            nn.Tanh(),
-            layer_init(nn.Linear(56, 56)),
-            nn.Tanh(),
-            layer_init(nn.Linear(56, N), std=0.01),
-        )
-
-    def forward(self, x):
-        return self.z(x)
-
-    def get_probs(self, x):
-        logits = self(x)
-        sampler_dist = Categorical(logits=logits)
-        return sampler_dist.probs
+    def get_action(self, x, action=None):
+        logits = self.q(x)
+        if action is None:
+            return torch.argmax(logits, dim=1), Categorical(logits=logits).probs
+        else:
+            return logits.gather(-1, action.unsqueeze(-1).long()).squeeze(-1), Categorical(logits=logits).probs
     
 class BestResponseSampler:
     def __init__(self, N, device, eta, beta=None):
@@ -205,13 +171,12 @@ class BestResponseSampler:
         t = self.eta * bellman
         t = torch.clamp(t, -50, 50)
         self.z = self.probs() * torch.exp(t)
-        self.z = torch.clamp(self.z / (torch.sum(self.z + 1e-8)), min=1e-8, max=1.0)
+        self.z = torch.clamp(self.z / (torch.sum(self.z)), min=1e-8, max=1.0)
         self.prob_dist = Categorical(self.z)
 
 class ExponentiatedGradientSampler:
-    def __init__(self, N, device, eta, beta=0.01):
+    def __init__(self, N, device, beta=0.01):
         self.n = N
-        self.eta = eta
         self.beta = beta
 
         self.h = torch.ones((self.n,)) / N
@@ -232,21 +197,16 @@ class ExponentiatedGradientSampler:
         return self.prob_dist.entropy().to(self.device)
     
     def update(self, bellman):
-        self.h = bellman -  self.eta * torch.log(self.n * self.probs())
+        self.h = bellman
         t = self.beta*self.h
         self.z = self.probs() * torch.exp(t)
         self.z = torch.clamp(self.z / (torch.sum(self.z)), min=1e-8, max=1.0)
         self.prob_dist = Categorical(self.z)
 
 
-def main(args):
-    import torch
-    import torch.nn as nn
-    import torch.optim as optim
-    
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+if __name__ == "__main__":
 
-    # assert args.num_envs == 1, "vectorized envs are not supported at the moment"
+    args = tyro.cli(Args)
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     args.batch_size = int(args.num_envs * args.num_steps)
     args.num_iterations = args.total_timesteps // args.batch_size
@@ -283,42 +243,43 @@ def main(args):
     )
     # assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    actor = QREPSPolicy(envs).to(device)
     qf = QNetwork(envs, args).to(device)
 
-    q_optimizer = optim.Adam(list(qf.parameters()), lr=args.q_lr_start, eps=1e-4)
-    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr_start, eps=1e-4)
+    if args.target_network:
+        qf_target = QNetwork(envs, args).to(device)
+        qf_target.load_state_dict(qf.state_dict())
 
-    alpha = args.alpha
-    if args.eta is None: eta = args.alpha
-    else: eta = torch.Tensor([args.eta]).to(device)
+    actor = Policy(qf)
+
+    if args.q_optimizer == "Adam" or args.q_optimizer == "RMSprop":
+        q_optimizer = getattr(optim, args.q_optimizer)(
+            list(qf.parameters()), lr=args.q_lr_start, eps=args.eps
+        )
+    else:
+        q_optimizer = getattr(optim, args.q_optimizer)(
+            list(qf.parameters()), lr=args.q_lr_start
+        )
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    logprobs = torch.zeros((args.num_steps, args.num_envs, envs.single_action_space.n)).to(device)
     next_observations = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)  # Added this line
     
     # TRY NOT TO MODIFY: start the game
     global_step = 0
-    start_time = time.time()
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
-
     rewards_df = pd.DataFrame(columns=["Step", "Reward"])
+    reward_iteration = []
 
     for iteration in range(1, args.num_iterations + 1):
-        reward_iteration = []
 
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
-            lrnow = frac * args.policy_lr_start
-            actor_optimizer.param_groups[0]["lr"] = lrnow
-
             lrnow = frac * args.q_lr_start
             q_optimizer.param_groups[0]["lr"] = lrnow
 
@@ -329,10 +290,9 @@ def main(args):
 
             # ALGO LOGIC: action logic
             with torch.no_grad():        
-                action, _, logprob, _ = actor.get_action(next_obs)
+                action, _ = actor.get_action(next_obs)
 
             actions[step] = action
-            logprobs[step] = logprob
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
@@ -352,79 +312,48 @@ def main(args):
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                         reward_iteration.append(info["episode"]["r"])
                         rs.append(info["episode"]["r"])
+
                 if len(rs)>0:
                     rewards_df = rewards_df._append({"Step": global_step, "Reward": np.mean(rs)}, ignore_index=True)
-
-
+        
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_next_obs = next_observations.reshape((-1,) + envs.single_observation_space.shape)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
-        b_logprobs = logprobs.reshape((-1, envs.single_action_space.n))
 
         b_rewards = rewards.flatten()
         b_dones = dones.flatten()
 
-        if len(reward_iteration) > 0: 
-            print(f"Iteration {global_step}: ", " Reward: ", np.mean(reward_iteration))
+        if len(reward_iteration) > 5: 
+            print(f"Iteration: {global_step}, Avg Reward: {np.mean(reward_iteration)}")
+            reward_iteration = []
 
-        if args.saddle_point_optimization:
-            if args.parametrized_sampler:
-                sampler = Sampler(N=b_obs.shape[0]).to(device)
-                sampler_optimizer = optim.Adam(list(sampler.parameters()), lr=args.beta)
-            else:
-                sampler = ExponentiatedGradientSampler(b_obs.shape[0], device, eta, args.beta)
+        sampler = ExponentiatedGradientSampler(b_obs.shape[0], device, args.beta)
 
         for epoch in range(args.update_epochs):
             
-            delta = b_rewards.squeeze() + args.gamma * qf.get_values(b_next_obs, policy=actor)[1] * (1 - b_dones.squeeze()) - qf.get_values(b_obs, b_actions, actor)[0]
+            if args.target_network:
+                delta = b_rewards.squeeze() + args.gamma * qf_target.get_values(b_next_obs, policy=actor)[1].detach() * (1 - b_dones.squeeze()) - qf.get_values(b_obs, b_actions, actor)[0]          
+            else: delta = b_rewards.squeeze() + args.gamma * qf.get_values(b_next_obs, policy=actor)[1] * (1 - b_dones.squeeze()) - qf.get_values(b_obs, b_actions, actor)[0]
 
-            if args.saddle_point_optimization:
-                bellman = delta.detach()
-                if args.parametrized_sampler: z_n = sampler.get_probs(bellman) 
-                else: z_n = sampler.probs() 
-                critic_loss = torch.sum(z_n.detach() * (delta - eta * torch.log(sampler.n * z_n.detach()))) + (1 - args.gamma) * qf.get_values(b_obs, b_actions, actor)[1].mean()
-            
-            else: 
-                critic_loss = eta * torch.log(torch.mean(torch.exp(delta / eta), 0)) + torch.mean((1 - args.gamma) * qf.get_values(b_obs, b_actions, actor)[1], 0)
-
+            bellman = delta.detach()
+            z_n = sampler.probs() 
+            critic_loss = torch.sum(z_n.detach() * delta) + (1 - args.gamma) * qf.get_values(b_obs, b_actions, actor)[1].mean()
+        
             q_optimizer.zero_grad()
             critic_loss.backward()
             q_optimizer.step()
 
-            if args.saddle_point_optimization:
+            sampler.update(bellman)
 
-                if args.parametrized_sampler:
-                    sampler_loss = - (torch.sum(z_n * (bellman - eta * torch.log(sampler.n * z_n))) + (1 - args.gamma) * qf.get_values(b_obs, b_actions, actor)[1].mean().detach())
-                    
-                    sampler_optimizer.zero_grad()
-                    sampler_loss.backward()
-                    sampler_optimizer.step()
+        actor.set_q(qf)
+        
+        if args.target_network and iteration % args.target_network_frequency == 0:
+            for param, target_param in zip(qf.parameters(), qf_target.parameters()):
+                target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
-                else: sampler.update(bellman)
-
-            if args.use_kl_loss: actor_loss = kl_loss(alpha, b_obs, b_next_obs, b_rewards, b_actions, b_logprobs, qf, actor)
-            else: actor_loss = nll_loss(alpha, b_obs, b_next_obs, b_rewards, b_actions, b_logprobs, qf, actor)
-            
-            actor_optimizer.zero_grad()
-            actor_loss.backward()
-            actor_optimizer.step()
-
+        
     rewards_df.to_csv(f"rewards_{run_name}.csv")
     envs.close()
     writer.close()
 
-# ### HP SEARCH
-args = tyro.cli(Args)
 
-if args.run_multiple_seeds:
-    rewards = []
-    n_seeds = 10
-
-    for i in range(n_seeds):
-        args.seed = i
-        reward = main(args)
-        rewards.append(reward)
-    print("Average reward:", np.mean(rewards), "stddev:", np.std(rewards))
-
-else:
-    reward = main(args)

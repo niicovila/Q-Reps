@@ -34,26 +34,21 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = True
+    track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "QREPS_LunarLander-v2"
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
-    capture_video: bool = True
+    capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
-
-    save_model: bool = False
-    """whether to save model into the `runs/{run_name}` folder"""
-    upload_model: bool = False
-    """whether to upload the saved model to huggingface"""
-    hf_entity: str = ""
-    """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
     env_id: str = "LunarLander-v2"
     """the id of the environment"""
-    total_timesteps: int = 1000
+    total_timesteps: int = 100000
+    """total timesteps of the experiments"""
+    num_steps: int = 1000
     """total timesteps of the experiments"""
     num_updates: int = 50
     """the number of updates"""
@@ -83,10 +78,6 @@ class Args:
     """the number of epochs for the policy network"""
     beta: float = 4e-5
     """the sampler step size"""
-    autotune: bool =  False
-    """automatic tuning of the entropy coefficient"""
-    target_entropy_scale: float = 0.2000
-    """coefficient for scaling the autotune entropy target"""
     use_linear_schedule: bool = True
     """if toggled, the learning rate will decrease linearly"""
     saddle_point_optimization: bool = True
@@ -251,10 +242,9 @@ class QREPSPolicy(nn.Module):
 
 
 def main(args):
-    import stable_baselines3 as sb3
-
     # assert args.num_envs == 1, "vectorized envs are not supported at the moment"
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    args.num_updates = args.total_timesteps // (args.num_rollouts * args.num_steps)
     if args.track:
         import wandb
 
@@ -293,46 +283,56 @@ def main(args):
     q_optimizer = optim.SGD(list(qf.parameters()), lr=args.q_lr)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
 
-    if args.autotune:
-        target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
-        log_alpha = torch.zeros(1, requires_grad=True, device=device)
-        alpha = log_alpha.exp().item()
-        a_optimizer = optim.Adam([log_alpha], lr=args.q_lr, eps=1e-4)
-    else:
-        alpha = args.alpha
+
+    alpha = args.alpha
     if args.eta is None: eta = args.alpha
     else: eta = args.eta
 
     rb = ReplayBuffer(args.buffer_size)
-    start_time = time.time()
 
     # TRY NOT TO MODIFY: start the game
     
     global_step = 0
-
+    rewards_df = pd.DataFrame(columns=["Step", "Reward"])
     for T in range(args.num_updates):
         all_rewards = []
+        reward_iteration = []
+
         if args.use_linear_schedule:
             q_optimizer.param_groups[0]["lr"] = linear_schedule(start_e= args.q_lr, end_e=args.q_lr_end, duration=args.num_updates, t=T)
             actor_optimizer.param_groups[0]["lr"] = linear_schedule(start_e= args.policy_lr, end_e=args.policy_lr_end, duration=args.num_updates, t=T)
 
         for N in range(args.num_rollouts):
             obs, _ = envs.reset(seed=args.seed)
-            for step in range(args.total_timesteps):
+            for step in range(args.num_steps):
                 global_step += 1
                 with torch.no_grad():
                     actions, a_loglike, loglikes, probs = actor.get_action(torch.Tensor(obs).to(device))
-                action = actions.numpy()
 
                 # TRY NOT TO MODIFY: execute the game and log data.
-                next_obs, reward, done, truncation, info = envs.step(action)
-                rb.push(obs, next_obs, action, reward, done, loglikes)
+                next_obs, reward, done, truncation, infos = envs.step(actions.cpu().numpy())
+                reward, obs, next_obs, done = torch.tensor(reward).to(device).view(-1), torch.Tensor(obs).to(device), torch.Tensor(next_obs).to(device), torch.Tensor(done).to(device)
+                rb.push(obs, next_obs, actions, reward, done, loglikes)
                 obs = next_obs
-                all_rewards.append(reward)
                 step += 1
+
+                if "final_info" in infos:
+                    rs = []
+                    for info in infos["final_info"]:
+                        if info and "episode" in info:
+                            writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                            writer.add_scalar("charts/episodic_return", info['episode']['r'], global_step)
+                            reward_iteration.append(info["episode"]["r"])
+                            rs.append(info["episode"]["r"])
+
+                    if len(rs)>0:
+                        rewards_df = rewards_df._append({"Step": global_step, "Reward": np.mean(rs)}, ignore_index=True)
+
                 if done.any():
                     break
 
+        if len(reward_iteration) > 0:
+            print(f"Average reward: {np.mean(reward_iteration)}")
         # TRAINING PHASE         
         (
         observations, 
@@ -354,23 +354,10 @@ def main(args):
         else: optimize_actor(alpha, observations, next_observations, rewards, actions, log_likes, qf, actor, actor_optimizer, steps=args.update_policy_epochs, loss_fn=nll_loss)
 
         rb.reset()
-        print("Iteation:", T, "reward:", np.sum(all_rewards)/(args.num_rollouts*args.num_envs))
-        writer.add_scalar("charts/episodic_return", np.sum(all_rewards)/(args.num_rollouts*args.num_envs), T)
 
-        
-        if args.autotune:
-            actions, a_loglike, loglikes, probs = actor.get_action(torch.Tensor(obs).to(device))
-            # re-use action probabilities for temperature loss
-            alpha_loss = (probs.detach() * (-log_alpha.exp() * (loglikes + target_entropy).detach())).mean()
-
-            a_optimizer.zero_grad()
-            alpha_loss.backward()
-            a_optimizer.step()
-            alpha = log_alpha.exp().item()
-
+    rewards_df.to_csv(f"rewards_{run_name}.csv")
     envs.close()
     writer.close()
-    return np.sum(all_rewards)/(args.num_rollouts*args.num_envs)
 
 # ### HP SEARCH
 args = tyro.cli(Args)
