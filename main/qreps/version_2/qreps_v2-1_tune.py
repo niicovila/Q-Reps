@@ -1,5 +1,5 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/dqn/#dqnpy
-import argparse
+import argparse 
 import itertools
 import os
 import random
@@ -38,6 +38,7 @@ config = {
     "wandb_project_name": "CC",
     "wandb_entity": None,
     "capture_video": False,
+
     "env_id": "CartPole-v1",
     "eta": None,
 
@@ -46,19 +47,19 @@ config = {
     "tau": 1.0,
     "gamma": 0.99,
 
-    "num_steps": tune.choice([128, 256, 500]),
+    "num_steps": tune.choice([128, 500]),
     "num_minibatches": tune.choice([4, 8, 16]),
     "alpha": tune.choice([2, 4, 8, 12]),
     "update_epochs": tune.choice([10, 50, 100]),
-    "target_network_frequency": tune.choice([1, 4, 8]), 
+    "target_network_frequency": tune.choice([2, 6, 12]), 
 
     "beta": tune.loguniform(1e-4, 1e-1),
     "policy_lr_start": tune.loguniform(1e-4, 1e-1),
     "q_lr_start": tune.loguniform(1e-4, 1e-1),
 
     "use_kl_loss": tune.choice([True, False]),
-    "target_network": tune.choice([True, False]),
-    "anneal_lr": tune.choice([True, False]),
+    "target_network": False,
+    "anneal_lr": False,
 
     "q_histogram": False,
     "saddle_point_optimization": True,
@@ -135,9 +136,11 @@ class QNetwork(nn.Module):
     def get_values(self, x, action=None, policy=None):
         q = self(x)
         z = q / self.alpha
+        
         if policy is None: pi_k = torch.ones(x.shape[0], self.env.single_action_space.n, device=x.device) / self.env.single_action_space.n
         else: _, _, _, pi_k = policy.get_action(x); pi_k = pi_k.detach()
         v = self.alpha * (torch.log(torch.sum(pi_k * torch.exp(z), dim=1))).squeeze(-1)
+
         if action is None:
             return q, v
         else:
@@ -170,15 +173,17 @@ class QREPSPolicy(nn.Module):
         return action, action_log_prob, log_prob, action_probs
     
 class Sampler(nn.Module):
-    def __init__(self, N):
+    def __init__(self, args, N):
         super().__init__()
         self.n = N
         self.z = nn.Sequential(
-            layer_init(nn.Linear(N, 56)),
-            nn.Tanh(),
-            layer_init(nn.Linear(56, 56)),
-            nn.Tanh(),
-            layer_init(nn.Linear(56, N), std=0.01),
+            layer_init(nn.Linear(N, args.sampler_hidden_size)),
+            getattr(nn, args.sampler_activation)(),
+            *[layer for _ in range(args.sampler_num_hidden_layers) for layer in (
+                layer_init(nn.Linear(args.sampler_hidden_size, args.sampler_hidden_size)),
+                getattr(nn, args.sampler_activation)()
+            )],
+            layer_init(nn.Linear(args.sampler_hidden_size, N), std=0.01),
         )
 
     def forward(self, x):
@@ -244,27 +249,6 @@ class ExponentiatedGradientSampler:
         self.z = torch.clamp(self.z / (torch.sum(self.z)), min=1e-8, max=1.0)
         self.prob_dist = Categorical(self.z)
 
-class Sampler(nn.Module):
-    def __init__(self, args, N):
-        super().__init__()
-        self.n = N
-        self.z = nn.Sequential(
-            layer_init(nn.Linear(N, args.sampler_hidden_size)),
-            getattr(nn, args.sampler_activation)(),
-            *[layer for _ in range(args.sampler_num_hidden_layers) for layer in (
-                layer_init(nn.Linear(args.sampler_hidden_size, args.sampler_hidden_size)),
-                getattr(nn, args.sampler_activation)()
-            )],
-            layer_init(nn.Linear(args.sampler_hidden_size, N), std=0.01),
-        )
-
-    def forward(self, x):
-        return self.z(x)
-
-    def get_probs(self, x):
-        logits = self(x)
-        sampler_dist = Categorical(logits=logits)
-        return sampler_dist.probs
 
 def main(config):
     import torch
@@ -352,10 +336,9 @@ def main(config):
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
-    rewards_df = pd.DataFrame(columns=["Step", "Reward"])
     reward_iteration = []
-
-    for iteration in range(1, args.num_iterations + 1):
+    try:
+     for iteration in range(1, args.num_iterations + 1):
 
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
@@ -389,7 +372,6 @@ def main(config):
             next_observations[step] = next_obs
 
             if "final_info" in infos:
-                rs = []
                 for info in infos["final_info"]:
                     if info and "episode" in info:
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
@@ -456,23 +438,27 @@ def main(config):
                     actor_optimizer.zero_grad()
                     actor_loss.backward()
                     actor_optimizer.step()
-                    
+
         if args.target_network and iteration % args.target_network_frequency == 0:
             for param, target_param in zip(qf.parameters(), qf_target.parameters()):
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+    except:
+        logging_callback(-111.0)
 
-    rewards_df.to_csv(f"rewards_{run_name}.csv")
+    if len(reward_iteration) > 0:
+        logging_callback(np.mean(reward_iteration))
+
     envs.close()
     writer.close()
 
 
 
-# search_alg = HEBOSearch(metric="reward", mode="max")
-# re_search_alg = Repeater(search_alg, repeat=2)
+search_alg = HEBOSearch(metric="reward", mode="max")
+re_search_alg = Repeater(search_alg, repeat=2)
 
-search_alg = OptunaSearch(metric="reward", mode="max")
-search_alg = ConcurrencyLimiter(search_alg, max_concurrent=4)
-re_search_alg = Repeater(search_alg, repeat=3)
+# search_alg = OptunaSearch(metric="reward", mode="max")
+# search_alg = ConcurrencyLimiter(search_alg, max_concurrent=4)
+# re_search_alg = Repeater(search_alg, repeat=3)
 
 ray_init_config = {
     "CPU": 1,
@@ -480,11 +466,11 @@ ray_init_config = {
 
 analysis = tune.run(
     main,
-    num_samples=100,
+    num_samples=200,
     config=config,
     search_alg=re_search_alg,
     # resources_per_trial=ray_init_config,
     local_dir="/Users/nicolasvila/workplace/uni/tfg_v2/tests/results_tune",
 )
 df = analysis.results_df
-df.to_csv("LunarLander_qreps_v2-1.csv")
+df.to_csv("CartPole_qreps_v2-1_no_anneal.csv")

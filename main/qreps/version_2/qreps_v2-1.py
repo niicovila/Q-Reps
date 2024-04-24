@@ -46,7 +46,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 50000
+    total_timesteps: int = 100000
     """total timesteps of the experiments"""
     num_envs: int = 4
     """the number of parallel game environments"""
@@ -55,26 +55,21 @@ class Args:
     gamma: float = 0.99
     """the discount factor gamma"""
 
-    policy_lr_start: float = 0.002318207958564144
+    policy_lr_start: float = 0.004091905000242891
     """the learning rate of the policy network optimizer"""
-    q_lr_start: float = 0.0014921427500205055
+    q_lr_start: float = 0.05459319476706635
     """the learning rate of the Q network network optimizer"""
-    beta: float = 0.00010048389221039837
+    beta: float = 0.06213467159412483
     """coefficient for the saddle point optimization"""
-
     alpha: float = 4.0
     """Entropy regularization coefficient."""
     eta = None
     """coefficient for the kl reg"""
-
     update_epochs: int = 50
     """the number of epochs for the policy and value networks"""
-    num_minibatches: int = 16
+    num_minibatches: int = 8
     """the number of minibatches to train the policy and value networks"""
-    target_network_frequency: int = 2
-    """the frequency of updating the target network"""
-    tau: float = 1.0
-    """the soft update coefficient for the target network"""
+
     
     # Network params
     policy_activation: str = "Tanh"
@@ -85,22 +80,21 @@ class Args:
     """the number of hidden layers of the policy network"""
     q_activation: str = "Tanh"
     """the activation function of the Q network"""
-    q_hidden_size: int = 64
+    q_hidden_size: int = 512
     """the hidden size of the Q network"""
-    q_num_hidden_layers: int = 2
+    q_num_hidden_layers: int = 4
     """the number of hidden layers of the Q network"""
-
 
     # Optimizer params
     q_optimizer: str = "SGD"
     """the optimizer of the Q network"""
     actor_optimizer: str = "Adam"
     """the optimizer of the policy network"""
-    eps: float = 1e-8
+    eps: float = 1e-4
     """the epsilon value for the optimizer"""
 
     # Options
-    anneal_lr: bool = True
+    anneal_lr: bool = False
     """if toggled, the learning rate will decrease linearly"""
     saddle_point_optimization: bool = True
     """if toggled, the saddle point optimization will be used"""
@@ -110,8 +104,12 @@ class Args:
     """if toggled, the kl loss will be used"""
     q_histogram: bool = False
     """if toggled, the q function histogram will be plotted"""
+    
     target_network: bool = False
     """if toggled, the target network will be used"""
+    target_network_frequency: int = 100
+    """the frequency of updating the target network"""
+    tau: float = 1.0
     
     # to be filled in runtime
     batch_size: int = 0
@@ -167,9 +165,11 @@ class QNetwork(nn.Module):
     def get_values(self, x, action=None, policy=None):
         q = self(x)
         z = q / self.alpha
+        
         if policy is None: pi_k = torch.ones(x.shape[0], self.env.single_action_space.n, device=x.device) / self.env.single_action_space.n
         else: _, _, _, pi_k = policy.get_action(x); pi_k = pi_k.detach()
         v = self.alpha * (torch.log(torch.sum(pi_k * torch.exp(z), dim=1))).squeeze(-1)
+
         if action is None:
             return q, v
         else:
@@ -202,15 +202,17 @@ class QREPSPolicy(nn.Module):
         return action, action_log_prob, log_prob, action_probs
     
 class Sampler(nn.Module):
-    def __init__(self, N):
+    def __init__(self, args, N):
         super().__init__()
         self.n = N
         self.z = nn.Sequential(
-            layer_init(nn.Linear(N, 56)),
-            nn.Tanh(),
-            layer_init(nn.Linear(56, 56)),
-            nn.Tanh(),
-            layer_init(nn.Linear(56, N), std=0.01),
+            layer_init(nn.Linear(N, args.sampler_hidden_size)),
+            getattr(nn, args.sampler_activation)(),
+            *[layer for _ in range(args.sampler_num_hidden_layers) for layer in (
+                layer_init(nn.Linear(args.sampler_hidden_size, args.sampler_hidden_size)),
+                getattr(nn, args.sampler_activation)()
+            )],
+            layer_init(nn.Linear(args.sampler_hidden_size, N), std=0.01),
         )
 
     def forward(self, x):
@@ -276,30 +278,8 @@ class ExponentiatedGradientSampler:
         self.z = torch.clamp(self.z / (torch.sum(self.z)), min=1e-8, max=1.0)
         self.prob_dist = Categorical(self.z)
 
-class Sampler(nn.Module):
-    def __init__(self, args, N):
-        super().__init__()
-        self.n = N
-        self.z = nn.Sequential(
-            layer_init(nn.Linear(N, args.sampler_hidden_size)),
-            getattr(nn, args.sampler_activation)(),
-            *[layer for _ in range(args.sampler_num_hidden_layers) for layer in (
-                layer_init(nn.Linear(args.sampler_hidden_size, args.sampler_hidden_size)),
-                getattr(nn, args.sampler_activation)()
-            )],
-            layer_init(nn.Linear(args.sampler_hidden_size, N), std=0.01),
-        )
-
-    def forward(self, x):
-        return self.z(x)
-
-    def get_probs(self, x):
-        logits = self(x)
-        sampler_dist = Categorical(logits=logits)
-        return sampler_dist.probs
 
 if __name__ == "__main__":
-
     args = tyro.cli(Args)
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     args.batch_size = int(args.num_envs * args.num_steps)
@@ -379,8 +359,8 @@ if __name__ == "__main__":
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
-    rewards_df = pd.DataFrame(columns=["Step", "Reward"])
     reward_iteration = []
+    rewards_df = pd.DataFrame(columns=["Step", "Reward"])
 
     for iteration in range(1, args.num_iterations + 1):
 
@@ -427,7 +407,6 @@ if __name__ == "__main__":
                 if len(rs)>0:
                     rewards_df = rewards_df._append({"Step": global_step, "Reward": np.mean(rs)}, ignore_index=True)
 
-        
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_next_obs = next_observations.reshape((-1,) + envs.single_observation_space.shape)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
@@ -438,7 +417,7 @@ if __name__ == "__main__":
         b_inds = np.arange(args.batch_size)
 
         if len(reward_iteration) > 5: 
-            print(f"Iteration: {global_step}, Avg Reward: {np.mean(reward_iteration)}")
+            print(f"Iteration {global_step}, mean episodic return: {np.mean(reward_iteration)}")
             reward_iteration = []
 
         np.random.shuffle(b_inds)
@@ -452,7 +431,7 @@ if __name__ == "__main__":
                     else:
                         sampler = ExponentiatedGradientSampler(b_obs[mb_inds].shape[0], device, eta, args.beta)
 
-                for epoch in range(args.update_epochs):   
+                for epoch in range(args.update_epochs):            
                     if args.target_network:
                         delta = b_rewards[mb_inds].squeeze() + args.gamma * qf_target.get_values(b_next_obs[mb_inds], policy=actor)[1].detach() * (1 - b_dones[mb_inds].squeeze()) - qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[0]          
                     else: delta = b_rewards[mb_inds].squeeze() + args.gamma * qf.get_values(b_next_obs[mb_inds], policy=actor)[1] * (1 - b_dones[mb_inds].squeeze()) - qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[0]
@@ -492,9 +471,21 @@ if __name__ == "__main__":
             for param, target_param in zip(qf.parameters(), qf_target.parameters()):
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
-    rewards_df.to_csv(f"rewards_{run_name}.csv")
+    if len(reward_iteration) > 0:
+        rewards_df = rewards_df._append({"Step": global_step, "Reward": np.mean(reward_iteration)}, ignore_index=True)
+        print(f"Iteration: {global_step}, Avg Reward: {np.mean(reward_iteration)}")
+
     envs.close()
     writer.close()
 
 
 
+    if args.q_histogram:
+        import matplotlib.pyplot as plt
+        Q_HIST = [item for array in Q_HIST for item in array.flatten()]
+        plt.hist(Q_HIST, bins=30, edgecolor='black')  # Adjust the number of bins as needed
+        plt.xlabel('Value')
+        plt.ylabel('Frequency')
+        plt.title('Q Function Histogram')
+        plt.grid(True)
+        plt.savefig(f'histogram_{args.seed}.png')  # Change the file extension as needed

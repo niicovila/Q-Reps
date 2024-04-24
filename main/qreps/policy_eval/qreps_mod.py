@@ -26,7 +26,7 @@ Q_HIST = []
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    seed: int = 1
+    seed: int = 2
     """seed of the experiment"""
     run_multiple_seeds: bool = False
     """if toggled, this script will run with multiple seeds"""
@@ -54,20 +54,21 @@ class Args:
     """the number of steps to run in each environment per policy rollout"""
     gamma: float = 0.99
     """the discount factor gamma"""
-    q_lr_start: float = 2.5e-4
+
+    q_lr_start: float = 0.00020571135648186006
     """the learning rate of the Q network network optimizer"""
-    beta: float = 3e-4
+    beta: float = 0.00016618354222092168
     """coefficient for the saddle point optimization"""
-    update_epochs: int = 10
+
+    update_epochs: int = 300
     """the number of epochs for the policy and value networks"""
 
-    
     # Network params
     q_activation: str = "Tanh"
     """the activation function of the Q network"""
-    q_hidden_size: int = 128
+    q_hidden_size: int = 512
     """the hidden size of the Q network"""
-    q_num_hidden_layers: int = 2
+    q_num_hidden_layers: int = 4
     """the number of hidden layers of the Q network"""
 
     target_network_frequency: int = 2
@@ -76,9 +77,9 @@ class Args:
     """the soft update coefficient"""
 
     # Optimizer params
-    q_optimizer: str = "SGD"
+    q_optimizer: str = "Adam"
     """the optimizer of the Q network"""
-    eps: float = 1e-4
+    eps: float = 1e-8
     """the epsilon value for the optimizer"""
 
     # Options
@@ -144,10 +145,12 @@ class Policy:
     
     def get_action(self, x, action=None):
         logits = self.q(x)
+        prob_dist = Categorical(logits=logits)
+        
         if action is None:
-            return torch.argmax(logits, dim=1), Categorical(logits=logits).probs
+            return prob_dist.sample(), prob_dist.probs
         else:
-            return logits.gather(-1, action.unsqueeze(-1).long()).squeeze(-1), Categorical(logits=logits).probs
+            return actions, prob_dist.probs
     
 class BestResponseSampler:
     def __init__(self, N, device, eta, beta=None):
@@ -346,7 +349,7 @@ if __name__ == "__main__":
             sampler.update(bellman)
 
         actor.set_q(qf)
-        
+
         if args.target_network and iteration % args.target_network_frequency == 0:
             for param, target_param in zip(qf.parameters(), qf_target.parameters()):
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)

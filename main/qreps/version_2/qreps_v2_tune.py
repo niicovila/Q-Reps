@@ -94,27 +94,28 @@ config = {
     "eta": None,
 
     "num_steps": tune.choice([128, 500]),
-    "update_epochs": tune.choice([10, 50, 100]),
-    "target_network_frequency": tune.choice([2, 6, 12]), 
+    "update_epochs": tune.choice([10, 50, 150]),
+    "target_network_frequency": 0, 
 
     "policy_lr_start": tune.loguniform(1e-4, 1e-1),
     "q_lr_start": tune.loguniform(1e-4, 1e-1),
     "beta": tune.loguniform(1e-4, 1e-1),
-    "alpha": tune.choice([2, 4, 8, 10]),
+    "alpha": tune.choice([4, 8, 12]),
 
     "use_kl_loss": tune.choice([True, False]),
-    "anneal_lr": tune.choice([True, False]),
-    "target_network": tune.choice([True, False]),
+    "anneal_lr": False,
+    "target_network": False,
 
-    "policy_activation": tune.choice(["Tanh", "ReLU"]),
+    "policy_activation": tune.choice(["Tanh", "ReLU", "Sigmoid"]),
     "num_hidden_layers": tune.choice([2, 4]),
     "hidden_size": tune.choice([64, 128, 512]),
-    "q_activation": tune.choice(["Tanh", "ReLU"]),
+    "q_activation": tune.choice(["Tanh", "ReLU", "Sigmoid"]),
     "q_hidden_size": tune.choice([64, 128, 512]),
     "q_num_hidden_layers": tune.choice([2, 4]),
-    "q_optimizer": tune.choice(["Adam", "SGD"]),
-    "actor_optimizer": tune.choice(["Adam", "SGD", "RMSprop"]),
     "eps": tune.choice([1e-4, 1e-8]),
+
+    "q_optimizer": "SGD",
+    "actor_optimizer": "Adam",
 
     "saddle_point_optimization": True,
     "parametrized_sampler" : False,
@@ -144,7 +145,7 @@ def make_env(env_id, seed, idx, capture_video, run_name):
     return thunk
 
 def nll_loss(alpha, observations, next_observations, rewards, actions, log_likes, q_net, policy):
-    weights = torch.clamp(q_net.get_values(observations, actions, policy)[0] / alpha, -20, 20)
+    weights = torch.clamp(q_net.get_values(observations, actions, policy)[0] / alpha, -50, 50)
     _, log_likes, _, _ = policy.get_action(observations, actions)
     nll = -torch.mean(torch.exp(weights.detach()) * log_likes)
     return nll
@@ -205,7 +206,10 @@ class QREPSPolicy(nn.Module):
     def get_action(self, x, action=None):
         logits = self(x)
         policy_dist = Categorical(logits=logits)
-        if action is None: action = policy_dist.sample()
+        
+        if action is None: 
+            action = policy_dist.sample()
+
         action_probs = policy_dist.probs
         log_prob = F.log_softmax(logits, dim=1)
         action_log_prob = policy_dist.log_prob(action)
@@ -241,9 +245,6 @@ def main(config):
     args.seed = config["__trial_index__"] + SEED_OFFSET
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     logging_callback=lambda r: train.report({'reward':r})
-
-    # assert args.num_envs == 1, "vectorized envs are not supported at the moment"
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     args.batch_size = int(args.num_envs * args.num_steps)
     args.num_iterations = args.total_timesteps // args.batch_size
 
@@ -277,7 +278,6 @@ def main(config):
     envs = gym.vector.SyncVectorEnv(
         [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name) for i in range(args.num_envs)]
     )
-    # assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     actor = QREPSPolicy(envs, args).to(device)
     qf = QNetwork(envs, args).to(device)
@@ -430,11 +430,13 @@ def main(config):
     except:
         logging_callback(-1000)
 
+    if len(reward_iteration) > 0:
+        logging_callback(np.mean(reward_iteration)) 
     envs.close()
     writer.close()
 
 search_alg = HEBOSearch(metric="reward", mode="max")
-re_search_alg = Repeater(search_alg, repeat=2)
+re_search_alg = Repeater(search_alg, repeat=3)
 
 # search_alg = OptunaSearch(metric="reward", mode="max")
 # search_alg = ConcurrencyLimiter(search_alg, max_concurrent=4)
@@ -443,11 +445,11 @@ re_search_alg = Repeater(search_alg, repeat=2)
 
 analysis = tune.run(
     main,
-    num_samples=200,
+    num_samples=300,
     config=config,
     search_alg=re_search_alg,
     # resources_per_trial=ray_init,
     local_dir="/Users/nicolasvila/workplace/uni/tfg_v2/tests/results_tune",
 )
 df = analysis.results_df
-df.to_csv("CartPole_qreps_v2_tune.csv")
+df.to_csv("CartPole_qreps_v2_tune_no_anneal.csv")
