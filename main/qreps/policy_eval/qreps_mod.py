@@ -150,32 +150,8 @@ class Policy:
         if action is None:
             return prob_dist.sample(), prob_dist.probs
         else:
-            return actions, prob_dist.probs
-    
-class BestResponseSampler:
-    def __init__(self, N, device, eta, beta=None):
-        self.n = N
-        self.eta = eta
-
-        self.z = torch.ones((self.n,)) / N
-
-        self.prob_dist = Categorical(self.z)
-        self.device = device
-
-    def reset(self):
-        self.h = torch.ones((self.n,))
-        self.z = torch.ones((self.n,))
-        self.prob_dist = Categorical(torch.softmax(torch.ones((self.n,)), 0))
-                                     
-    def probs(self):
-        return self.prob_dist.probs.to(self.device)
-    
-    def update(self, bellman):
-        t = self.eta * bellman
-        t = torch.clamp(t, -50, 50)
-        self.z = self.probs() * torch.exp(t)
-        self.z = torch.clamp(self.z / (torch.sum(self.z)), min=1e-8, max=1.0)
-        self.prob_dist = Categorical(self.z)
+            return action, prob_dist.probs
+        
 
 class ExponentiatedGradientSampler:
     def __init__(self, N, device, beta=0.01):

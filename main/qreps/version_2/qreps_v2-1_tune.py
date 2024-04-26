@@ -42,16 +42,16 @@ config = {
     "env_id": "CartPole-v1",
     "eta": None,
 
-    "total_timesteps": 50000,
+    "total_timesteps": 100000,
     "num_envs": 4,
     "tau": 1.0,
     "gamma": 0.99,
 
-    "num_steps": tune.choice([128, 500]),
+    "num_steps": tune.choice([128, 256, 500]),
     "num_minibatches": tune.choice([4, 8, 16]),
-    "alpha": tune.choice([2, 4, 8, 12]),
+    "alpha": tune.choice([4, 8, 12]),
     "update_epochs": tune.choice([10, 50, 100]),
-    "target_network_frequency": tune.choice([2, 6, 12]), 
+    "target_network_frequency": 0, 
 
     "beta": tune.loguniform(1e-4, 1e-1),
     "policy_lr_start": tune.loguniform(1e-4, 1e-1),
@@ -59,21 +59,21 @@ config = {
 
     "use_kl_loss": tune.choice([True, False]),
     "target_network": False,
-    "anneal_lr": False,
+    "anneal_lr": tune.choice([True, False]),
 
     "q_histogram": False,
     "saddle_point_optimization": True,
     "parametrized_sampler" : False,
 
-    "policy_activation": tune.choice(["Tanh", "ReLU"]),
+    "policy_activation": tune.choice(["Tanh", "ReLU", "Sigmoid"]),
     "num_hidden_layers": tune.choice([2, 4]),
     "hidden_size": tune.choice([64, 128, 512]),
-    "q_activation": tune.choice(["Tanh", "ReLU"]),
+    "q_activation": tune.choice(["Tanh", "ReLU", "Sigmoid"]),
     "q_hidden_size": tune.choice([64, 128, 512]),
     "q_num_hidden_layers": tune.choice([2, 4]),
 
-    "q_optimizer": "SGD",
-    "actor_optimizer": "Adam",
+    "q_optimizer": tune.choice(["Adam", "SGD"]),
+    "actor_optimizer": tune.choice(["Adam", "SGD"]),
     "eps": tune.choice([1e-4, 1e-8]),
 
     # "sampler_hidden_size": 512,
@@ -454,7 +454,7 @@ def main(config):
 
 
 search_alg = HEBOSearch(metric="reward", mode="max")
-re_search_alg = Repeater(search_alg, repeat=2)
+re_search_alg = Repeater(search_alg, repeat=3)
 
 # search_alg = OptunaSearch(metric="reward", mode="max")
 # search_alg = ConcurrencyLimiter(search_alg, max_concurrent=4)
@@ -466,11 +466,11 @@ ray_init_config = {
 
 analysis = tune.run(
     main,
-    num_samples=200,
+    num_samples=600,
     config=config,
     search_alg=re_search_alg,
     # resources_per_trial=ray_init_config,
     local_dir="/Users/nicolasvila/workplace/uni/tfg_v2/tests/results_tune",
 )
 df = analysis.results_df
-df.to_csv("CartPole_qreps_v2-1_no_anneal.csv")
+df.to_csv("CartPole_qreps_v2-1.csv")

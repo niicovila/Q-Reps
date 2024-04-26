@@ -1,4 +1,5 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/dqn/#dqnpy
+from copy import deepcopy
 import itertools
 import os
 import random
@@ -26,7 +27,7 @@ Q_HIST = []
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    seed: int = 1
+    seed: int = 2
     """seed of the experiment"""
     run_multiple_seeds: bool = False
     """if toggled, this script will run with multiple seeds"""
@@ -36,7 +37,7 @@ class Args:
     """if toggled, cuda will be enabled by default"""
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "CartPole-v1-QREPS-Benchmark"
+    wandb_project_name: str = "CartPole-QREPS-Saddle-Benchmark"
     """the wandb's project name"""
     wandb_entity = None
     """the entity (team) of wandb's project"""
@@ -50,29 +51,36 @@ class Args:
     """total timesteps of the experiments"""
     num_envs: int = 4
     """the number of parallel game environments"""
-    num_steps: int = 500
+    num_steps: int = 300
     """the number of steps to run in each environment per policy rollout"""
     gamma: float = 0.99
     """the discount factor gamma"""
-
-    policy_lr_start: float = 0.004091905000242891
-    """the learning rate of the policy network optimizer"""
-    q_lr_start: float = 0.05459319476706635
-    """the learning rate of the Q network network optimizer"""
-    beta: float = 0.06213467159412483
-    """coefficient for the saddle point optimization"""
-    alpha: float = 4.0
-    """Entropy regularization coefficient."""
-    eta = None
-    """coefficient for the kl reg"""
-    update_epochs: int = 50
+    update_epochs: int = 100
     """the number of epochs for the policy and value networks"""
     num_minibatches: int = 8
     """the number of minibatches to train the policy and value networks"""
+    q_last_layer_std: float = 1.0
+    """the standard deviation of the last layer of the Q network"""
+    actor_last_layer_std: float = 0.01
+    """the standard deviation of the last layer of the Q network"""
+    layer_init: bool = True
+    """if toggled, the layers will be initialized"""
+
+
+    policy_lr_start: float = 0.0022370478556036
+    """the learning rate of the policy network optimizer"""
+    q_lr_start: float = 0.0023558824219659
+    """the learning rate of the Q network network optimizer"""
+    beta: float = 0.0070811761546232
+    """coefficient for the saddle point optimization"""
+    alpha: float = 8.0
+    """Entropy regularization coefficient."""
+    eta = None
+    """coefficient for the kl reg"""
 
     
     # Network params
-    policy_activation: str = "Tanh"
+    policy_activation: str = "ReLU"
     """the activation function of the policy network"""
     hidden_size: int = 128
     """the hidden size of the policy network"""
@@ -80,7 +88,7 @@ class Args:
     """the number of hidden layers of the policy network"""
     q_activation: str = "Tanh"
     """the activation function of the Q network"""
-    q_hidden_size: int = 512
+    q_hidden_size: int = 128
     """the hidden size of the Q network"""
     q_num_hidden_layers: int = 4
     """the number of hidden layers of the Q network"""
@@ -90,7 +98,7 @@ class Args:
     """the optimizer of the Q network"""
     actor_optimizer: str = "Adam"
     """the optimizer of the policy network"""
-    eps: float = 1e-4
+    eps: float = 1e-8
     """the epsilon value for the optimizer"""
 
     # Options
@@ -104,6 +112,8 @@ class Args:
     """if toggled, the kl loss will be used"""
     q_histogram: bool = False
     """if toggled, the q function histogram will be plotted"""
+    average_critics: bool = False   
+    """if toggled, the critics will be averaged"""
     
     target_network: bool = False
     """if toggled, the target network will be used"""
@@ -149,14 +159,21 @@ class QNetwork(nn.Module):
         super().__init__()
         self.env = env
         self.alpha = args.alpha
+
+        def init_layer(layer, std=np.sqrt(2)):
+            if args.layer_init:
+                return layer_init(layer, std=std)
+            else:
+                return layer
+
         self.critic = nn.Sequential(
-            nn.Linear(np.array(env.single_observation_space.shape).prod(), args.q_hidden_size),
+            init_layer(nn.Linear(np.array(env.single_observation_space.shape).prod(), args.q_hidden_size)),
             getattr(nn, args.q_activation)(),
             *[layer for _ in range(args.q_num_hidden_layers) for layer in (
-                nn.Linear(args.q_hidden_size, args.q_hidden_size),
+                init_layer(nn.Linear(args.q_hidden_size, args.q_hidden_size)),
                 getattr(nn, args.q_activation)()
             )],
-            nn.Linear(args.q_hidden_size, env.single_action_space.n),
+            init_layer(nn.Linear(args.q_hidden_size, env.single_action_space.n), std=args.q_last_layer_std),
         )
 
     def forward(self, x):
@@ -179,14 +196,21 @@ class QNetwork(nn.Module):
 class QREPSPolicy(nn.Module):
     def __init__(self, env, args):
         super().__init__()
+
+        def init_layer(layer, std=np.sqrt(2)):
+            if args.layer_init:
+                return layer_init(layer, std=std)
+            else:
+                return layer
+            
         self.actor = nn.Sequential(
-            nn.Linear(np.array(env.single_observation_space.shape).prod(), args.hidden_size),
+            init_layer(nn.Linear(np.array(env.single_observation_space.shape).prod(), args.hidden_size)),
             getattr(nn, args.policy_activation)(),
             *[layer for _ in range(args.num_hidden_layers) for layer in (
-                nn.Linear(args.hidden_size, args.hidden_size),
+                init_layer(nn.Linear(args.hidden_size, args.hidden_size)),
                 getattr(nn, args.policy_activation)()
             )],
-            nn.Linear(args.hidden_size, env.single_action_space.n),
+            init_layer(nn.Linear(args.hidden_size, env.single_action_space.n), std=args.actor_last_layer_std),
         )
 
     def forward(self, x):
@@ -415,6 +439,7 @@ if __name__ == "__main__":
         b_rewards = rewards.flatten()
         b_dones = dones.flatten()
         b_inds = np.arange(args.batch_size)
+        weights_after_each_epoch = []
 
         if len(reward_iteration) > 5: 
             print(f"Iteration {global_step}, mean episodic return: {np.mean(reward_iteration)}")
@@ -467,6 +492,14 @@ if __name__ == "__main__":
                     actor_loss.backward()
                     actor_optimizer.step()
 
+                if args.average_critics: weights_after_each_epoch.append(deepcopy(qf.state_dict()))
+        
+        if args.average_critics:
+            avg_weights = {}
+            for key in weights_after_each_epoch[0].keys():
+                avg_weights[key] = sum(T[key] for T in weights_after_each_epoch) / len(weights_after_each_epoch)
+            qf.load_state_dict(avg_weights)
+
         if args.target_network and iteration % args.target_network_frequency == 0:
             for param, target_param in zip(qf.parameters(), qf_target.parameters()):
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
@@ -474,7 +507,7 @@ if __name__ == "__main__":
     if len(reward_iteration) > 0:
         rewards_df = rewards_df._append({"Step": global_step, "Reward": np.mean(reward_iteration)}, ignore_index=True)
         print(f"Iteration: {global_step}, Avg Reward: {np.mean(reward_iteration)}")
-
+    rewards_df.to_csv(f"rewards_{run_name}.csv")
     envs.close()
     writer.close()
 

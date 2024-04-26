@@ -476,7 +476,6 @@ if __name__ == "__main__":
             for param, target_param in zip(qf.parameters(), qf_target.parameters()):
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
-
     if len(reward_iteration) > 0:
         rewards_df = rewards_df._append({"Step": global_step, "Reward": np.mean(reward_iteration)}, ignore_index=True)
         print(f"Iteration: {global_step}, Avg Reward: {np.mean(reward_iteration)}")

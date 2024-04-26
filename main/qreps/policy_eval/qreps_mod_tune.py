@@ -1,4 +1,5 @@
 import argparse
+from copy import deepcopy
 import random
 import time
 
@@ -89,29 +90,30 @@ config = {
     "wandb_entity": None,
     "capture_video": False,
     "env_id": "CartPole-v1",
-    "total_timesteps": 50000,
+    "total_timesteps": 100000,
     "gamma": 0.99,
     "target_network_frequency": 0,
     "tau": 1.0, 
 
     "num_envs": tune.choice([4, 8]),
-    "num_steps": tune.choice([128, 500]),
+    "num_steps": tune.choice([128, 256, 350, 500]),
 
     "q_lr_start": tune.loguniform(1e-4, 1e-1),
     "beta": tune.loguniform(1e-4, 1e-1),
 
-    "update_epochs": tune.choice([10, 50, 100, 300, 450]),
+    "update_epochs": tune.choice([10, 50, 100, 150]),
 
-    "q_optimizer": tune.choice(["Adam", "SGD"]),
-    "q_activation": tune.choice(["Tanh", "ReLU"]),
+    "q_optimizer": tune.choice(["Adam", "SGD", "Sigmoid"]),
+    "q_activation": tune.choice(["Tanh", "ReLU", "Sigmoid"]),
 
     "q_hidden_size": tune.choice([64, 128, 256, 512]),
     "q_num_hidden_layers": tune.choice([2, 4, 8]),
-    "eps": tune.choice([1e-8, 1e-6, 1e-4]),
+    "eps": tune.choice([1e-8, 1e-4]),
 
     "anneal_lr": tune.choice([True, False]),
     "target_network": False,
     "q_histogram": False,
+    "average_critics": tune.choice([True, False]),
 
     "batch_size": 0,
     "num_iterations": 0
@@ -171,11 +173,12 @@ class Policy:
     
     def get_action(self, x, action=None):
         logits = self.q(x)
+        prob_dist = Categorical(logits=logits)
+        
         if action is None:
-            return torch.argmax(logits, dim=1), Categorical(logits=logits).probs
+            return prob_dist.sample(), prob_dist.probs
         else:
-            return logits.gather(-1, action.unsqueeze(-1).long()).squeeze(-1), Categorical(logits=logits).probs
-    
+            return action, prob_dist.probs
 
 class ExponentiatedGradientSampler:
     def __init__(self, N, device, beta=0.01):
@@ -326,6 +329,7 @@ def main(config):
 
         b_rewards = rewards.flatten()
         b_dones = dones.flatten()
+        weights_after_each_epoch = []
 
         if len(reward_iteration) > 5: 
             logging_callback(np.mean(reward_iteration))
@@ -348,12 +352,19 @@ def main(config):
             q_optimizer.step()
 
             sampler.update(bellman)
+            if args.average_critics: weights_after_each_epoch.append(deepcopy(qf.state_dict()))
+    
+        if args.average_critics:
+            avg_weights = {}
+            for key in weights_after_each_epoch[0].keys():
+                avg_weights[key] = sum(T[key] for T in weights_after_each_epoch) / len(weights_after_each_epoch)
+            qf.load_state_dict(avg_weights)
 
-        actor.set_q(qf)
-        
-        if args.target_network and iteration % args.target_network_frequency == 0:
-            for param, target_param in zip(qf.parameters(), qf_target.parameters()):
-                target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+            actor.set_q(qf)
+            
+            if args.target_network and iteration % args.target_network_frequency == 0:
+                for param, target_param in zip(qf.parameters(), qf_target.parameters()):
+                    target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
     except:
         logging_callback(-1111.0)
@@ -365,7 +376,7 @@ def main(config):
     writer.close()
 
 search_alg = HEBOSearch(metric="reward", mode="max")
-re_search_alg = Repeater(search_alg, repeat=2)
+re_search_alg = Repeater(search_alg, repeat=3)
 
 # search_alg = OptunaSearch(metric="reward", mode="max")
 # search_alg = ConcurrencyLimiter(search_alg, max_concurrent=4)
@@ -375,11 +386,11 @@ ray_init = {"cpu": 1}
 
 analysis = tune.run(
     main,
-    num_samples=100,
+    num_samples=300,
     config=config,
     search_alg=re_search_alg,
     # resources_per_trial=ray_init,
     local_dir="/Users/nicolasvila/workplace/uni/tfg_v2/tests/results_tune",
 )
 df = analysis.results_df
-df.to_csv("CartPole_qreps_mod.csv")
+df.to_csv("CartPole_qreps_mod_v2.csv")
