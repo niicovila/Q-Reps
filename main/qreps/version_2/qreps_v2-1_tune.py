@@ -1,20 +1,16 @@
+
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/dqn/#dqnpy
 import argparse 
 from copy import deepcopy
-import itertools
 import os
 import random
 import time
-from dataclasses import dataclass
 
 import gymnasium as gym
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
-import tyro
 from torch.utils.tensorboard import SummaryWriter
 from torch.distributions import Categorical
 from ray import train
@@ -23,6 +19,7 @@ from ray.tune.search.hebo import HEBOSearch
 import ray.tune as tune  # Import the missing package
 from ray.tune.search.optuna import OptunaSearch
 from ray.tune.search import ConcurrencyLimiter
+
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
@@ -377,8 +374,7 @@ def main(config):
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
     reward_iteration = []
-    try:
-     for iteration in range(1, args.num_iterations + 1):
+    for iteration in range(1, args.num_iterations + 1):
 
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
@@ -499,8 +495,8 @@ def main(config):
         if args.target_network and iteration % args.target_network_frequency == 0:
             for param, target_param in zip(qf.parameters(), qf_target.parameters()):
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-    except:
-        logging_callback(-10.0)
+
+
     if len(reward_iteration) > 0:
         logging_callback(np.mean(reward_iteration))
 
@@ -522,11 +518,11 @@ ray_init_config = {
 
 analysis = tune.run(
     main,
-    num_samples=600,
+    num_samples=100,
     config=config,
     search_alg=re_search_alg,
     # resources_per_trial=ray_init_config,
     local_dir="/Users/nicolasvila/workplace/uni/tfg_v2/tests/results_tune",
 )
 df = analysis.results_df
-df.to_csv("CartPole_Qreps_main.csv")
+df.to_csv("CartPole_Qreps_main_2.csv")

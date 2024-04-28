@@ -139,6 +139,8 @@ class Args:
     # Plotting
     q_histogram: bool = False
     """if toggled, the q function histogram will be plotted"""
+    save_learning_curve: bool = False
+    """if toggled, the learning curve will be saved"""
 
     # to be filled in runtime
     num_iterations: int = 0
@@ -408,7 +410,7 @@ if __name__ == "__main__":
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
     reward_iteration = []
-    rewards_df = pd.DataFrame(columns=["Step", "Reward"])
+    if args.save_learning_curve: rewards_df = pd.DataFrame(columns=["Step", "Reward"])
 
     for iteration in range(1, args.num_iterations + 1):
 
@@ -453,7 +455,7 @@ if __name__ == "__main__":
 
                 if len(rs)>0:
                     writer.add_scalar("charts/episodic_return", np.mean(rs), global_step)
-                    rewards_df = rewards_df._append({"Step": global_step, "Reward": np.mean(rs)}, ignore_index=True)
+                    if args.save_learning_curve: rewards_df = rewards_df._append({"Step": global_step, "Reward": np.mean(rs)}, ignore_index=True)
 
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_next_obs = next_observations.reshape((-1,) + envs.single_observation_space.shape)
@@ -539,10 +541,10 @@ if __name__ == "__main__":
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
     if len(reward_iteration) > 0:
-        rewards_df = rewards_df._append({"Step": global_step, "Reward": np.mean(reward_iteration)}, ignore_index=True)
+        if args.save_learning_curve: rewards_df = rewards_df._append({"Step": global_step, "Reward": np.mean(reward_iteration)}, ignore_index=True)
         print(f"Iteration: {global_step}, Avg Reward: {np.mean(reward_iteration)}")
 
-    rewards_df.to_csv(f"rewards_{run_name}.csv")
+    if args.save_learning_curve: rewards_df.to_csv(f"rewards_{run_name}.csv")
     envs.close()
     writer.close()
 

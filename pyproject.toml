@@ -1,0 +1,41 @@
+[tool.poetry]
+name = "qreps"
+version = "0.1.0"
+description = ""
+authors = ["Nicolas Vila <nicolas.vila01@estudiant.upf.edu>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+tensorboard = "^2.15.0"
+wandb = "^0.16.0"
+gym = "0.23.1"
+torch = ">=2.2.0"
+gymnasium = ">=0.28.1"
+moviepy = "^1.0.3"
+pygame = "^2.1.0"
+rich = "<12.0"
+tenacity = "^8.2.2"
+tyro = "^0.5.10"
+pyyaml = "^6.0.1"
+ray="2.12.0"
+GPy="^1.13.1"
+HEBO="^0.3.5"
+pyarrow="^14.0.1"
+
+
+ale-py = {version = "0.8.1", optional = true}
+AutoROM = {extras = ["accept-rom-license"], version = "~0.4.2", optional = true}
+optuna = {version = "^3.0.1", optional = true}
+optuna-dashboard = {version = "^0.7.2", optional = true}
+numpy = ">=1.21.6"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.extras]
+atari = ["ale-py", "AutoROM", "opencv-python", "shimmy"]
+plot = ["pandas", "seaborn"]
+optuna = ["optuna", "optuna-dashboard"]

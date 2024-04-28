@@ -3,6 +3,30 @@ A study of regularized reinforcement learning algorithms from both a MaxEntRL an
 
 In main, you will find the three main algorithms I'm currently working on.
 
+### Usage
+
+```bash
+poetry install
+poetry run python algos/qreps/qreps_main.py \
+    --seed 1 \
+    --env-id CartPole-v0 \
+    --total-timesteps 50000
+
+# open another terminal and enter `cd algos/qreps`
+tensorboard --logdir runs
+```
+
+To use experiment tracking with wandb, run
+```bash
+wandb login # only required for the first time
+poetry run python algos/qreps/qreps_main.py \
+    --seed 1 \
+    --env-id CartPole-v0 \
+    --total-timesteps 50000 \
+    --track \
+    --wandb-project-name qrepstest
+```
+
 ### Provisional Results:
 ### QREPS
 Fast convergence in LunarLander and CartPole (for now).
