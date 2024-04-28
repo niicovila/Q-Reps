@@ -88,9 +88,6 @@ class Args:
     eps: float = 1e-4
     """the epsilon value for the optimizer"""
 
-    
-    saddle_point_optimization: int = False
-    """if toggled, the saddle point optimization will be used"""
     use_kl_loss: int = False
     """if toggled, the kl loss will be used"""
     q_histogram: int = False
@@ -291,10 +288,6 @@ if __name__ == "__main__":
     actor = QREPSPolicy(envs, args).to(device)
     qf = QNetwork(envs, args).to(device)
 
-    if args.saddle_point_optimization:
-        sampler = Sampler(N=args.minibatch_size).to(device)
-        sampler_optimizer = optim.Adam(list(sampler.parameters()), lr=args.policy_lr_start, eps=1e-4)
-
     if args.q_optimizer == "Adam" or args.q_optimizer == "RMSprop":
         q_optimizer = getattr(optim, args.q_optimizer)(
             list(qf.parameters()), lr=args.q_lr_start, eps=args.eps
@@ -400,8 +393,8 @@ if __name__ == "__main__":
             for start in range(0, args.batch_size, args.minibatch_size):
                     end = start + args.minibatch_size
                     mb_inds = b_inds[start:end]
+                    
                     delta = b_rewards[mb_inds].squeeze() + args.gamma * qf.get_values(b_next_obs[mb_inds], policy=actor)[1] * (1 - b_dones[mb_inds].squeeze()) - qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[0]
-
                     critic_loss = eta * torch.log(torch.mean(torch.exp(delta / eta), 0)) + torch.mean((1 - args.gamma) * qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[1], 0)
 
                     q_optimizer.zero_grad()

@@ -1,5 +1,6 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/dqn/#dqnpy
 import argparse 
+from copy import deepcopy
 import itertools
 import os
 import random
@@ -40,49 +41,63 @@ config = {
     "capture_video": False,
 
     "env_id": "CartPole-v1",
+
+    # Algorithm
+    "total_timesteps": 100000,
+    "num_envs": tune.choice([4, 8, 64, 128, 256]),
+    "gamma": tune.choice([0.9, 0.95, 0.97, 0.99, 0.999]),
+
+    "total_iterations": tune.choice([512, 1024, 2048, 4096]),
+    "num_minibatches": tune.choice([8, 16, 32, 64]),
+    "update_epochs": tune.choice([10, 25, 50, 100, 150]),
+
+    "alpha": tune.choice([4, 8, 12, 32]),
     "eta": None,
 
-    "total_timesteps": 100000,
-    "num_envs": 4,
-    "tau": 1.0,
-    "gamma": 0.99,
+    # Learning rates
+    "beta": tune.choice([3e-05, 0.0001, 0.00025, 0.0003, 0.001, 0.003]),
+    "policy_lr": tune.choice([3e-05, 0.0001, 0.00025, 0.0003, 0.001, 0.003]),
+    "q_lr": tune.choice([3e-05, 0.0001, 0.00025, 0.0003, 0.001, 0.003]),
 
-    "num_steps": tune.choice([128, 256, 500]),
-    "num_minibatches": tune.choice([4, 8, 16]),
-    "alpha": tune.choice([4, 8, 12]),
-    "update_epochs": tune.choice([10, 50, 100]),
-    "target_network_frequency": 0, 
-
-    "beta": tune.loguniform(1e-4, 1e-1),
-    "policy_lr_start": tune.loguniform(1e-4, 1e-1),
-    "q_lr_start": tune.loguniform(1e-4, 1e-1),
-
-    "use_kl_loss": tune.choice([True, False]),
-    "target_network": False,
-    "anneal_lr": tune.choice([True, False]),
-
-    "q_histogram": False,
-    "saddle_point_optimization": True,
-    "parametrized_sampler" : False,
-
+    # Architecture
     "policy_activation": tune.choice(["Tanh", "ReLU", "Sigmoid"]),
     "num_hidden_layers": tune.choice([2, 4]),
     "hidden_size": tune.choice([64, 128, 512]),
-    "q_activation": tune.choice(["Tanh", "ReLU", "Sigmoid"]),
+    "actor_last_layer_std": tune.choice([0.01, 0.1, 1.0]),
+
+    "q_activation": tune.choice(["Tanh", "ReLU", "Sigmoid", "ELU"]),
     "q_hidden_size": tune.choice([64, 128, 512]),
     "q_num_hidden_layers": tune.choice([2, 4]),
+    "q_last_layer_std": tune.choice([0.01, 0.1, 1.0]),
 
-    "q_optimizer": tune.choice(["Adam", "SGD"]),
-    "actor_optimizer": tune.choice(["Adam", "SGD"]),
+    "sampler_activation": tune.choice(["Tanh", "ReLU", "Sigmoid", "ELU"]),
+    "sampler_hidden_size": 512,
+    "sampler_num_hidden_layers": tune.choice([2, 4, 8]),
+    "sampler_last_layer_std": tune.choice([0.01, 0.1, 1.0]),
+
+    # Optimization
+    "q_optimizer": tune.choice(["Adam", "SGD", "RMSprop"]),
+    "actor_optimizer": tune.choice(["Adam", "SGD", "RMSprop"]),
+    "sampler_optimizer": tune.choice(["Adam", "SGD", "RMSprop"]),
     "eps": tune.choice([1e-4, 1e-8]),
 
-    # "sampler_hidden_size": 512,
-    # "sampler_activation": tune.choice(["Tanh", "ReLU"]),
-    # "sampler_num_hidden_layers": tune.choice([2, 4, 8]),
+    # Options
+    "ort_init": tune.choice([True, False]),
+    "average_critics": True,
+    "normalize_delta": tune.choice([True, False]),
+    "use_kl_loss": tune.choice([True, False]),
+    "anneal_lr": tune.choice([True, False]),
+    "parametrized_sampler" : tune.choice([True, False]),
+    "saddle_point_optimization": True,
+    "q_histogram": False,
 
-    "batch_size": 0,
+    "target_network": False,
+    "tau": 1.0,
+    "target_network_frequency": 0, 
+
     "minibatch_size": 0,
-    "num_iterations": 0
+    "num_iterations": 0,
+    "num_steps": 0,
 }
 
 import logging
@@ -120,14 +135,21 @@ class QNetwork(nn.Module):
         super().__init__()
         self.env = env
         self.alpha = args.alpha
+
+        def init_layer(layer, std=np.sqrt(2)):
+            if args.ort_init:
+                return layer_init(layer, std=std)
+            else:
+                return layer
+
         self.critic = nn.Sequential(
-            nn.Linear(np.array(env.single_observation_space.shape).prod(), args.q_hidden_size),
+            init_layer(nn.Linear(np.array(env.single_observation_space.shape).prod(), args.q_hidden_size)),
             getattr(nn, args.q_activation)(),
             *[layer for _ in range(args.q_num_hidden_layers) for layer in (
-                nn.Linear(args.q_hidden_size, args.q_hidden_size),
+                init_layer(nn.Linear(args.q_hidden_size, args.q_hidden_size)),
                 getattr(nn, args.q_activation)()
             )],
-            nn.Linear(args.q_hidden_size, env.single_action_space.n),
+            init_layer(nn.Linear(args.q_hidden_size, env.single_action_space.n), std=args.q_last_layer_std),
         )
 
     def forward(self, x):
@@ -150,14 +172,21 @@ class QNetwork(nn.Module):
 class QREPSPolicy(nn.Module):
     def __init__(self, env, args):
         super().__init__()
+
+        def init_layer(layer, std=np.sqrt(2)):
+            if args.ort_init:
+                return layer_init(layer, std=std)
+            else:
+                return layer
+            
         self.actor = nn.Sequential(
-            nn.Linear(np.array(env.single_observation_space.shape).prod(), args.hidden_size),
+            init_layer(nn.Linear(np.array(env.single_observation_space.shape).prod(), args.hidden_size)),
             getattr(nn, args.policy_activation)(),
             *[layer for _ in range(args.num_hidden_layers) for layer in (
-                nn.Linear(args.hidden_size, args.hidden_size),
+                init_layer(nn.Linear(args.hidden_size, args.hidden_size)),
                 getattr(nn, args.policy_activation)()
             )],
-            nn.Linear(args.hidden_size, env.single_action_space.n),
+            init_layer(nn.Linear(args.hidden_size, env.single_action_space.n), std=args.actor_last_layer_std),
         )
 
     def forward(self, x):
@@ -176,14 +205,21 @@ class Sampler(nn.Module):
     def __init__(self, args, N):
         super().__init__()
         self.n = N
+
+        def init_layer(layer, std=np.sqrt(2)):
+            if args.ort_init:
+                return layer_init(layer, std=std)
+            else:
+                return layer
+            
         self.z = nn.Sequential(
-            layer_init(nn.Linear(N, args.sampler_hidden_size)),
+            init_layer(nn.Linear(N, args.sampler_hidden_size)),
             getattr(nn, args.sampler_activation)(),
             *[layer for _ in range(args.sampler_num_hidden_layers) for layer in (
-                layer_init(nn.Linear(args.sampler_hidden_size, args.sampler_hidden_size)),
+                init_layer(nn.Linear(args.sampler_hidden_size, args.sampler_hidden_size)),
                 getattr(nn, args.sampler_activation)()
             )],
-            layer_init(nn.Linear(args.sampler_hidden_size, N), std=0.01),
+            init_layer(nn.Linear(args.sampler_hidden_size, N), std=args.sampler_last_layer_std),
         )
 
     def forward(self, x):
@@ -258,9 +294,10 @@ def main(config):
     args = argparse.Namespace(**config)
     args.seed = config["__trial_index__"] + SEED_OFFSET
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    args.batch_size = int(args.num_envs * args.num_steps)
-    args.minibatch_size = args.batch_size // args.num_minibatches
-    args.num_iterations = args.total_timesteps // args.batch_size
+    args.minibatch_size = args.total_iterations // args.num_minibatches
+    args.num_iterations = args.total_timesteps // args.total_iterations
+    args.num_steps = args.total_iterations // args.num_envs
+
     logging_callback=lambda r: train.report({'reward':r})
 
     if args.track:
@@ -298,26 +335,29 @@ def main(config):
     actor = QREPSPolicy(envs, args).to(device)
     qf = QNetwork(envs, args).to(device)
 
+    actor = QREPSPolicy(envs, args).to(device)
+    qf = QNetwork(envs, args).to(device)
+
     if args.target_network:
         qf_target = QNetwork(envs, args).to(device)
         qf_target.load_state_dict(qf.state_dict())
 
     if args.q_optimizer == "Adam" or args.q_optimizer == "RMSprop":
         q_optimizer = getattr(optim, args.q_optimizer)(
-            list(qf.parameters()), lr=args.q_lr_start, eps=args.eps
+            list(qf.parameters()), lr=args.q_lr, eps=args.eps
         )
     else:
         q_optimizer = getattr(optim, args.q_optimizer)(
-            list(qf.parameters()), lr=args.q_lr_start
+            list(qf.parameters()), lr=args.q_lr
         )
     if args.actor_optimizer == "Adam" or args.actor_optimizer == "RMSprop":
         actor_optimizer = getattr(optim, args.actor_optimizer)(
-            list(actor.parameters()), lr=args.policy_lr_start, eps=args.eps
+            list(actor.parameters()), lr=args.policy_lr, eps=args.eps
         )
     else:
 
         actor_optimizer = getattr(optim, args.actor_optimizer)(
-            list(actor.parameters()), lr=args.policy_lr_start
+            list(actor.parameters()), lr=args.policy_lr
         )
     alpha = args.alpha
     if args.eta is None: eta = args.alpha
@@ -343,10 +383,10 @@ def main(config):
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
-            lrnow = frac * args.policy_lr_start
+            lrnow = frac * args.policy_lr
             actor_optimizer.param_groups[0]["lr"] = lrnow
 
-            lrnow = frac * args.q_lr_start
+            lrnow = frac * args.q_lr
             q_optimizer.param_groups[0]["lr"] = lrnow
 
         for step in range(0, args.num_steps):
@@ -374,77 +414,93 @@ def main(config):
             if "final_info" in infos:
                 for info in infos["final_info"]:
                     if info and "episode" in info:
-                        writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                        writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                         reward_iteration.append(info["episode"]["r"])
 
-        
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_next_obs = next_observations.reshape((-1,) + envs.single_observation_space.shape)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
         b_logprobs = logprobs.reshape((-1, envs.single_action_space.n))
-
         b_rewards = rewards.flatten()
         b_dones = dones.flatten()
-        b_inds = np.arange(args.batch_size)
+        b_inds = np.arange(args.total_iterations)
 
-        if len(reward_iteration) > 5:
+        weights_after_each_epoch = []
+
+        if len(reward_iteration) > 5: 
             logging_callback(np.mean(reward_iteration))
             reward_iteration = []
 
         np.random.shuffle(b_inds)
-        for start in range(0, args.batch_size, args.minibatch_size):
-                end = start + args.minibatch_size
-                mb_inds = b_inds[start:end]
-                if args.saddle_point_optimization:
-                    if args.parametrized_sampler:
-                        sampler = Sampler(args, N=b_obs[mb_inds].shape[0]).to(device)
-                        sampler_optimizer = optim.Adam(list(sampler.parameters()), lr=args.beta)
+        for start in range(0, args.total_iterations, args.minibatch_size):
+            end = start + args.minibatch_size
+            mb_inds = b_inds[start:end]
+
+            if args.saddle_point_optimization:
+                if args.parametrized_sampler:
+                    sampler = Sampler(args, N=b_obs[mb_inds].shape[0]).to(device)
+
+                    if args.sampler_optimizer == "Adam" or args.sampler_optimizer == "RMSprop":
+                        sampler_optimizer = getattr(optim, args.sampler_optimizer)(
+                            list(sampler.parameters()), lr=args.beta, eps=args.eps
+                        )
                     else:
-                        sampler = ExponentiatedGradientSampler(b_obs[mb_inds].shape[0], device, eta, args.beta)
+                        sampler_optimizer = getattr(optim, args.sampler_optimizer)(
+                            list(sampler.parameters()), lr=args.beta
+                        )
+                else:
+                    sampler = ExponentiatedGradientSampler(b_obs[mb_inds].shape[0], device, eta, args.beta)
 
-                for epoch in range(args.update_epochs):            
-                    if args.target_network:
-                        delta = b_rewards[mb_inds].squeeze() + args.gamma * qf_target.get_values(b_next_obs[mb_inds], policy=actor)[1].detach() * (1 - b_dones[mb_inds].squeeze()) - qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[0]          
-                    else: delta = b_rewards[mb_inds].squeeze() + args.gamma * qf.get_values(b_next_obs[mb_inds], policy=actor)[1] * (1 - b_dones[mb_inds].squeeze()) - qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[0]
+            for epoch in range(args.update_epochs):            
+                if args.target_network:
+                    delta = b_rewards[mb_inds].squeeze() + args.gamma * qf_target.get_values(b_next_obs[mb_inds], policy=actor)[1].detach() * (1 - b_dones[mb_inds].squeeze()) - qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[0]          
+                else: delta = b_rewards[mb_inds].squeeze() + args.gamma * qf.get_values(b_next_obs[mb_inds], policy=actor)[1] * (1 - b_dones[mb_inds].squeeze()) - qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[0]
+
+                if args.normalize_delta: delta = (delta - delta.mean()) / (delta.std() + 1e-8)
+
+                if args.saddle_point_optimization:
+                    bellman = delta.detach()
+                    if args.parametrized_sampler: z_n = sampler.get_probs(bellman) 
+                    else: z_n = sampler.probs() 
+                    critic_loss = torch.sum(z_n.detach() * (delta - eta * torch.log(sampler.n * z_n.detach()))) + (1 - args.gamma) * qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[1].mean()
+                
+                else: 
+                    critic_loss = eta * torch.log(torch.mean(torch.exp(delta / eta), 0)) + torch.mean((1 - args.gamma) * qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[1], 0)
+
+                q_optimizer.zero_grad()
+                critic_loss.backward()
+                q_optimizer.step()
+
+                if args.saddle_point_optimization:
+
+                    if args.parametrized_sampler:
+                        sampler_loss = - (torch.sum(z_n * (bellman - eta * torch.log(sampler.n * z_n))) + (1 - args.gamma) * qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[1].mean().detach())
+                        
+                        sampler_optimizer.zero_grad()
+                        sampler_loss.backward()
+                        sampler_optimizer.step()
+
+                    else: sampler.update(bellman)
+
+                if args.use_kl_loss: actor_loss = kl_loss(alpha, b_obs[mb_inds], b_next_obs[mb_inds], b_rewards[mb_inds], b_actions[mb_inds], b_logprobs[mb_inds], qf, actor)
+                else: actor_loss = nll_loss(alpha, b_obs[mb_inds], b_next_obs[mb_inds], b_rewards[mb_inds], b_actions[mb_inds], b_logprobs[mb_inds], qf, actor)
+                
+                actor_optimizer.zero_grad()
+                actor_loss.backward()
+                actor_optimizer.step()
+
+            if args.average_critics: weights_after_each_epoch.append(deepcopy(qf.state_dict()))
         
-                    if args.saddle_point_optimization:
-                        bellman = delta.detach()
-                        if args.parametrized_sampler: z_n = sampler.get_probs(bellman) 
-                        else: z_n = sampler.probs() 
-                        critic_loss = torch.sum(z_n.detach() * (delta - eta * torch.log(sampler.n * z_n.detach()))) + (1 - args.gamma) * qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[1].mean()
-                    
-                    else: 
-                        critic_loss = eta * torch.log(torch.mean(torch.exp(delta / eta), 0)) + torch.mean((1 - args.gamma) * qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[1], 0)
-
-                    q_optimizer.zero_grad()
-                    critic_loss.backward()
-                    q_optimizer.step()
-
-                    if args.saddle_point_optimization:
-
-                        if args.parametrized_sampler:
-                            sampler_loss = - (torch.sum(z_n * (bellman - eta * torch.log(sampler.n * z_n))) + (1 - args.gamma) * qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[1].mean().detach())
-                            
-                            sampler_optimizer.zero_grad()
-                            sampler_loss.backward()
-                            sampler_optimizer.step()
-
-                        else: sampler.update(bellman)
-
-                    if args.use_kl_loss: actor_loss = kl_loss(alpha, b_obs[mb_inds], b_next_obs[mb_inds], b_rewards[mb_inds], b_actions[mb_inds], b_logprobs[mb_inds], qf, actor)
-                    else: actor_loss = nll_loss(alpha, b_obs[mb_inds], b_next_obs[mb_inds], b_rewards[mb_inds], b_actions[mb_inds], b_logprobs[mb_inds], qf, actor)
-                    
-                    actor_optimizer.zero_grad()
-                    actor_loss.backward()
-                    actor_optimizer.step()
+        if args.average_critics:
+            avg_weights = {}
+            for key in weights_after_each_epoch[0].keys():
+                avg_weights[key] = sum(T[key] for T in weights_after_each_epoch) / len(weights_after_each_epoch)
+            qf.load_state_dict(avg_weights)
 
         if args.target_network and iteration % args.target_network_frequency == 0:
             for param, target_param in zip(qf.parameters(), qf_target.parameters()):
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
     except:
-        logging_callback(-111.0)
-
+        logging_callback(-10.0)
     if len(reward_iteration) > 0:
         logging_callback(np.mean(reward_iteration))
 
@@ -473,4 +529,4 @@ analysis = tune.run(
     local_dir="/Users/nicolasvila/workplace/uni/tfg_v2/tests/results_tune",
 )
 df = analysis.results_df
-df.to_csv("CartPole_qreps_v2-1.csv")
+df.to_csv("CartPole_Qreps_main.csv")

@@ -1,11 +1,10 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/dqn/#dqnpy
 from copy import deepcopy
-import itertools
 import os
 import random
 import time
 from dataclasses import dataclass
-
+import matplotlib.pyplot as plt
 import gymnasium as gym
 import numpy as np
 import pandas as pd
@@ -14,8 +13,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import tyro
-from torch.utils.tensorboard import SummaryWriter
 from torch.distributions import Categorical
+from torch.utils.tensorboard import SummaryWriter
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
@@ -27,7 +26,7 @@ Q_HIST = []
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    seed: int = 2
+    seed: int = 1
     """seed of the experiment"""
     run_multiple_seeds: bool = False
     """if toggled, this script will run with multiple seeds"""
@@ -44,14 +43,14 @@ class Args:
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
-    # Algorithm specific arguments
+    # Dynamics settings
     env_id: str = "CartPole-v1"
     """the id of the environment"""
     total_timesteps: int = 100000
     """total timesteps of the experiments"""
     num_envs: int = 4
     """the number of parallel game environments"""
-    num_steps: int = 300
+    total_iterations: int = 1024
     """the number of steps to run in each environment per policy rollout"""
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -59,75 +58,95 @@ class Args:
     """the number of epochs for the policy and value networks"""
     num_minibatches: int = 8
     """the number of minibatches to train the policy and value networks"""
-    q_last_layer_std: float = 1.0
-    """the standard deviation of the last layer of the Q network"""
-    actor_last_layer_std: float = 0.01
-    """the standard deviation of the last layer of the Q network"""
-    layer_init: bool = True
-    """if toggled, the layers will be initialized"""
 
-
-    policy_lr_start: float = 0.0022370478556036
+    policy_lr: float = 0.0022370478556036
     """the learning rate of the policy network optimizer"""
-    q_lr_start: float = 0.0023558824219659
+    q_lr: float = 0.0023558824219659
     """the learning rate of the Q network network optimizer"""
     beta: float = 0.0070811761546232
     """coefficient for the saddle point optimization"""
+
+    # Regularization
     alpha: float = 8.0
     """Entropy regularization coefficient."""
     eta = None
     """coefficient for the kl reg"""
 
     
-    # Network params
+    # Policy Network params
     policy_activation: str = "ReLU"
     """the activation function of the policy network"""
     hidden_size: int = 128
     """the hidden size of the policy network"""
     num_hidden_layers: int = 4
     """the number of hidden layers of the policy network"""
+    actor_last_layer_std: float = 0.01
+    """the standard deviation of the last layer of the Q network"""
+
+    # Q Network params
     q_activation: str = "Tanh"
     """the activation function of the Q network"""
     q_hidden_size: int = 128
     """the hidden size of the Q network"""
     q_num_hidden_layers: int = 4
     """the number of hidden layers of the Q network"""
+    q_last_layer_std: float = 1.0
+    """the standard deviation of the last layer of the Q network"""
 
+    # Sampler params
+    sampler_activation: str = "Tanh"
+    """the activation function of the sampler"""
+    sampler_hidden_size: int = 64
+    """the hidden size of the sampler"""
+    sampler_num_hidden_layers: int = 2
+    """the number of hidden layers of the sampler"""
+    sampler_last_layer_std: float = 0.01
+    """the standard deviation of the last layer of the sampler"""
+    
     # Optimizer params
     q_optimizer: str = "SGD"
     """the optimizer of the Q network"""
     actor_optimizer: str = "Adam"
     """the optimizer of the policy network"""
+    sampler_optimizer: str = "Adam"
+    """the optimizer of the sampler"""
     eps: float = 1e-8
     """the epsilon value for the optimizer"""
 
     # Options
-    anneal_lr: bool = False
-    """if toggled, the learning rate will decrease linearly"""
     saddle_point_optimization: bool = True
     """if toggled, the saddle point optimization will be used"""
+    ort_init: bool = False
+    """if toggled, the layers will be initialized"""
+    anneal_lr: bool = False
+    """if toggled, the learning rate will decrease linearly"""
     parametrized_sampler: bool = False
     """if toggled, the sampler will be parametrized"""
     use_kl_loss: bool = False
     """if toggled, the kl loss will be used"""
-    q_histogram: bool = False
-    """if toggled, the q function histogram will be plotted"""
-    average_critics: bool = False   
+    average_critics: bool = False
     """if toggled, the critics will be averaged"""
+    normalize_delta: bool = False
+    """if toggled, the delta will be normalized"""
     
     target_network: bool = False
     """if toggled, the target network will be used"""
-    target_network_frequency: int = 100
+    target_network_frequency: int = 16
     """the frequency of updating the target network"""
     tau: float = 1.0
+    """the soft update coefficient for the target network"""
     
+    # Plotting
+    q_histogram: bool = False
+    """if toggled, the q function histogram will be plotted"""
+
     # to be filled in runtime
-    batch_size: int = 0
-    """the batch size (computed in runtime)"""
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
     minibatch_size: int = 0
     """the minibatch size (computed in runtime)"""
+    num_steps: int = 0
+    """the number of steps (computed in runtime)"""
 
 def make_env(env_id, seed, idx, capture_video, run_name):
     def thunk():
@@ -161,7 +180,7 @@ class QNetwork(nn.Module):
         self.alpha = args.alpha
 
         def init_layer(layer, std=np.sqrt(2)):
-            if args.layer_init:
+            if args.ort_init:
                 return layer_init(layer, std=std)
             else:
                 return layer
@@ -198,7 +217,7 @@ class QREPSPolicy(nn.Module):
         super().__init__()
 
         def init_layer(layer, std=np.sqrt(2)):
-            if args.layer_init:
+            if args.ort_init:
                 return layer_init(layer, std=std)
             else:
                 return layer
@@ -229,14 +248,21 @@ class Sampler(nn.Module):
     def __init__(self, args, N):
         super().__init__()
         self.n = N
+
+        def init_layer(layer, std=np.sqrt(2)):
+            if args.ort_init:
+                return layer_init(layer, std=std)
+            else:
+                return layer
+            
         self.z = nn.Sequential(
-            layer_init(nn.Linear(N, args.sampler_hidden_size)),
+            init_layer(nn.Linear(N, args.sampler_hidden_size)),
             getattr(nn, args.sampler_activation)(),
             *[layer for _ in range(args.sampler_num_hidden_layers) for layer in (
-                layer_init(nn.Linear(args.sampler_hidden_size, args.sampler_hidden_size)),
+                init_layer(nn.Linear(args.sampler_hidden_size, args.sampler_hidden_size)),
                 getattr(nn, args.sampler_activation)()
             )],
-            layer_init(nn.Linear(args.sampler_hidden_size, N), std=0.01),
+            init_layer(nn.Linear(args.sampler_hidden_size, N), std=args.sampler_last_layer_std),
         )
 
     def forward(self, x):
@@ -302,14 +328,12 @@ class ExponentiatedGradientSampler:
         self.z = torch.clamp(self.z / (torch.sum(self.z)), min=1e-8, max=1.0)
         self.prob_dist = Categorical(self.z)
 
-
 if __name__ == "__main__":
     args = tyro.cli(Args)
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    args.batch_size = int(args.num_envs * args.num_steps)
-    args.minibatch_size = args.batch_size // args.num_minibatches
-    args.num_iterations = args.total_timesteps // args.batch_size
-
+    args.minibatch_size = args.total_iterations // args.num_minibatches
+    args.num_iterations = args.total_timesteps // args.total_iterations
+    args.num_steps = args.total_iterations // args.num_envs
     if args.track:
         import wandb
 
@@ -351,20 +375,20 @@ if __name__ == "__main__":
 
     if args.q_optimizer == "Adam" or args.q_optimizer == "RMSprop":
         q_optimizer = getattr(optim, args.q_optimizer)(
-            list(qf.parameters()), lr=args.q_lr_start, eps=args.eps
+            list(qf.parameters()), lr=args.q_lr, eps=args.eps
         )
     else:
         q_optimizer = getattr(optim, args.q_optimizer)(
-            list(qf.parameters()), lr=args.q_lr_start
+            list(qf.parameters()), lr=args.q_lr
         )
     if args.actor_optimizer == "Adam" or args.actor_optimizer == "RMSprop":
         actor_optimizer = getattr(optim, args.actor_optimizer)(
-            list(actor.parameters()), lr=args.policy_lr_start, eps=args.eps
+            list(actor.parameters()), lr=args.policy_lr, eps=args.eps
         )
     else:
 
         actor_optimizer = getattr(optim, args.actor_optimizer)(
-            list(actor.parameters()), lr=args.policy_lr_start
+            list(actor.parameters()), lr=args.policy_lr
         )
     alpha = args.alpha
     if args.eta is None: eta = args.alpha
@@ -391,10 +415,10 @@ if __name__ == "__main__":
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
-            lrnow = frac * args.policy_lr_start
+            lrnow = frac * args.policy_lr
             actor_optimizer.param_groups[0]["lr"] = lrnow
 
-            lrnow = frac * args.q_lr_start
+            lrnow = frac * args.q_lr
             q_optimizer.param_groups[0]["lr"] = lrnow
 
         for step in range(0, args.num_steps):
@@ -423,36 +447,44 @@ if __name__ == "__main__":
                 rs = []
                 for info in infos["final_info"]:
                     if info and "episode" in info:
-                        writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                         reward_iteration.append(info["episode"]["r"])
                         rs.append(info["episode"]["r"])
 
                 if len(rs)>0:
+                    writer.add_scalar("charts/episodic_return", np.mean(rs), global_step)
                     rewards_df = rewards_df._append({"Step": global_step, "Reward": np.mean(rs)}, ignore_index=True)
 
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_next_obs = next_observations.reshape((-1,) + envs.single_observation_space.shape)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
         b_logprobs = logprobs.reshape((-1, envs.single_action_space.n))
-
         b_rewards = rewards.flatten()
         b_dones = dones.flatten()
-        b_inds = np.arange(args.batch_size)
+        b_inds = np.arange(args.total_iterations)
         weights_after_each_epoch = []
 
         if len(reward_iteration) > 5: 
-            print(f"Iteration {global_step}, mean episodic return: {np.mean(reward_iteration)}")
+            print(f"Iteration {global_step}, mean episodic return: {np.round(np.mean(reward_iteration))}")
             reward_iteration = []
 
         np.random.shuffle(b_inds)
-        for start in range(0, args.batch_size, args.minibatch_size):
+        for start in range(0, args.total_iterations, args.minibatch_size):
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
+
                 if args.saddle_point_optimization:
                     if args.parametrized_sampler:
                         sampler = Sampler(args, N=b_obs[mb_inds].shape[0]).to(device)
-                        sampler_optimizer = optim.Adam(list(sampler.parameters()), lr=args.beta)
+
+                        if args.sampler_optimizer == "Adam" or args.sampler_optimizer == "RMSprop":
+                            sampler_optimizer = getattr(optim, args.sampler_optimizer)(
+                                list(sampler.parameters()), lr=args.beta, 
+                            )
+                        else:
+                            sampler_optimizer = getattr(optim, args.sampler_optimizer)(
+                                list(sampler.parameters()), lr=args.beta
+                            )
                     else:
                         sampler = ExponentiatedGradientSampler(b_obs[mb_inds].shape[0], device, eta, args.beta)
 
@@ -460,7 +492,9 @@ if __name__ == "__main__":
                     if args.target_network:
                         delta = b_rewards[mb_inds].squeeze() + args.gamma * qf_target.get_values(b_next_obs[mb_inds], policy=actor)[1].detach() * (1 - b_dones[mb_inds].squeeze()) - qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[0]          
                     else: delta = b_rewards[mb_inds].squeeze() + args.gamma * qf.get_values(b_next_obs[mb_inds], policy=actor)[1] * (1 - b_dones[mb_inds].squeeze()) - qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[0]
-        
+
+                    if args.normalize_delta: delta = (delta - delta.mean()) / (delta.std() + 1e-8)
+
                     if args.saddle_point_optimization:
                         bellman = delta.detach()
                         if args.parametrized_sampler: z_n = sampler.get_probs(bellman) 
@@ -507,14 +541,12 @@ if __name__ == "__main__":
     if len(reward_iteration) > 0:
         rewards_df = rewards_df._append({"Step": global_step, "Reward": np.mean(reward_iteration)}, ignore_index=True)
         print(f"Iteration: {global_step}, Avg Reward: {np.mean(reward_iteration)}")
+
     rewards_df.to_csv(f"rewards_{run_name}.csv")
     envs.close()
     writer.close()
 
-
-
     if args.q_histogram:
-        import matplotlib.pyplot as plt
         Q_HIST = [item for array in Q_HIST for item in array.flatten()]
         plt.hist(Q_HIST, bins=30, edgecolor='black')  # Adjust the number of bins as needed
         plt.xlabel('Value')
