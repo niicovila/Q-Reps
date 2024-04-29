@@ -26,7 +26,7 @@ Q_HIST = []
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    seed: int = 1
+    seed: int = 2
     """seed of the experiment"""
     run_multiple_seeds: bool = False
     """if toggled, this script will run with multiple seeds"""
@@ -50,7 +50,7 @@ class Args:
     """total timesteps of the experiments"""
     num_envs: int = 4
     """the number of parallel game environments"""
-    total_iterations: int = 1024
+    total_iterations: int = 512
     """the number of steps to run in each environment per policy rollout"""
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -59,11 +59,11 @@ class Args:
     num_minibatches: int = 8
     """the number of minibatches to train the policy and value networks"""
 
-    policy_lr: float = 0.0022370478556036
+    policy_lr: float = 3e-4
     """the learning rate of the policy network optimizer"""
-    q_lr: float = 0.0023558824219659
+    q_lr: float = 3e-4
     """the learning rate of the Q network network optimizer"""
-    beta: float = 0.0070811761546232
+    beta: float = 3e-4
     """coefficient for the saddle point optimization"""
 
     # Regularization
@@ -94,11 +94,11 @@ class Args:
     """the standard deviation of the last layer of the Q network"""
 
     # Sampler params
-    sampler_activation: str = "Tanh"
+    sampler_activation: str = "ReLU"
     """the activation function of the sampler"""
-    sampler_hidden_size: int = 64
+    sampler_hidden_size: int = 128
     """the hidden size of the sampler"""
-    sampler_num_hidden_layers: int = 2
+    sampler_num_hidden_layers: int = 4
     """the number of hidden layers of the sampler"""
     sampler_last_layer_std: float = 0.01
     """the standard deviation of the last layer of the sampler"""
@@ -116,17 +116,17 @@ class Args:
     # Options
     saddle_point_optimization: bool = True
     """if toggled, the saddle point optimization will be used"""
-    ort_init: bool = False
+    ort_init: bool = True
     """if toggled, the layers will be initialized"""
     anneal_lr: bool = False
     """if toggled, the learning rate will decrease linearly"""
-    parametrized_sampler: bool = False
+    parametrized_sampler: bool = True
     """if toggled, the sampler will be parametrized"""
     use_kl_loss: bool = False
     """if toggled, the kl loss will be used"""
-    average_critics: bool = False
+    average_critics: bool = True
     """if toggled, the critics will be averaged"""
-    normalize_delta: bool = False
+    normalize_delta: bool = True
     """if toggled, the delta will be normalized"""
     
     target_network: bool = False
@@ -139,7 +139,7 @@ class Args:
     # Plotting
     q_histogram: bool = False
     """if toggled, the q function histogram will be plotted"""
-    save_learning_curve: bool = False
+    save_learning_curve: bool = True
     """if toggled, the learning curve will be saved"""
 
     # to be filled in runtime

@@ -12,7 +12,6 @@ poetry run python algos/qreps/qreps_main.py \
     --env-id CartPole-v0 \
     --total-timesteps 50000
 
-# open another terminal and enter `cd algos/qreps`
 tensorboard --logdir runs
 ```
 

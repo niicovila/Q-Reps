@@ -44,7 +44,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Dynamics settings
-    env_id: str = "CartPole-v1"
+    env_id: str = "LunarLander-v2"
     """the id of the environment"""
     total_timesteps: int = 100000
     """total timesteps of the experiments"""
@@ -59,11 +59,11 @@ class Args:
     num_minibatches: int = 8
     """the number of minibatches to train the policy and value networks"""
 
-    policy_lr: float = 0.0022370478556036
+    policy_lr: float = 3e-4
     """the learning rate of the policy network optimizer"""
-    q_lr: float = 0.0023558824219659
+    q_lr: float = 3e-4
     """the learning rate of the Q network network optimizer"""
-    beta: float = 0.0070811761546232
+    beta: float = 3e-4
     """coefficient for the saddle point optimization"""
 
     # Regularization
@@ -74,11 +74,11 @@ class Args:
 
     
     # Policy Network params
-    policy_activation: str = "ReLU"
+    policy_activation: str = "Tanh"
     """the activation function of the policy network"""
     hidden_size: int = 128
     """the hidden size of the policy network"""
-    num_hidden_layers: int = 4
+    num_hidden_layers: int = 2
     """the number of hidden layers of the policy network"""
     actor_last_layer_std: float = 0.01
     """the standard deviation of the last layer of the Q network"""
@@ -88,7 +88,7 @@ class Args:
     """the activation function of the Q network"""
     q_hidden_size: int = 128
     """the hidden size of the Q network"""
-    q_num_hidden_layers: int = 4
+    q_num_hidden_layers: int = 2
     """the number of hidden layers of the Q network"""
     q_last_layer_std: float = 1.0
     """the standard deviation of the last layer of the Q network"""
@@ -96,7 +96,7 @@ class Args:
     # Sampler params
     sampler_activation: str = "Tanh"
     """the activation function of the sampler"""
-    sampler_hidden_size: int = 64
+    sampler_hidden_size: int = 128
     """the hidden size of the sampler"""
     sampler_num_hidden_layers: int = 2
     """the number of hidden layers of the sampler"""
@@ -104,7 +104,7 @@ class Args:
     """the standard deviation of the last layer of the sampler"""
     
     # Optimizer params
-    q_optimizer: str = "SGD"
+    q_optimizer: str = "Adam"
     """the optimizer of the Q network"""
     actor_optimizer: str = "Adam"
     """the optimizer of the policy network"""
@@ -116,15 +116,15 @@ class Args:
     # Options
     saddle_point_optimization: bool = True
     """if toggled, the saddle point optimization will be used"""
-    ort_init: bool = False
+    ort_init: bool = True
     """if toggled, the layers will be initialized"""
-    anneal_lr: bool = False
+    anneal_lr: bool = True
     """if toggled, the learning rate will decrease linearly"""
-    parametrized_sampler: bool = False
+    parametrized_sampler: bool = True
     """if toggled, the sampler will be parametrized"""
     use_kl_loss: bool = False
     """if toggled, the kl loss will be used"""
-    average_critics: bool = False
+    average_critics: bool = True
     """if toggled, the critics will be averaged"""
     normalize_delta: bool = False
     """if toggled, the delta will be normalized"""

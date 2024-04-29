@@ -447,11 +447,13 @@ def main(config):
                     sampler = ExponentiatedGradientSampler(b_obs[mb_inds].shape[0], device, eta, args.beta)
 
             for epoch in range(args.update_epochs):            
+                
                 if args.target_network:
                     delta = b_rewards[mb_inds].squeeze() + args.gamma * qf_target.get_values(b_next_obs[mb_inds], policy=actor)[1].detach() * (1 - b_dones[mb_inds].squeeze()) - qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[0]          
+                
                 else: delta = b_rewards[mb_inds].squeeze() + args.gamma * qf.get_values(b_next_obs[mb_inds], policy=actor)[1] * (1 - b_dones[mb_inds].squeeze()) - qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[0]
 
-                if args.normalize_delta: delta = (delta - delta.mean()) / (delta.std() + 1e-8)
+                if args.normalize_delta: delta = (delta - delta.mean()) / (delta.std() + 1e-9)
 
                 if args.saddle_point_optimization:
                     bellman = delta.detach()
