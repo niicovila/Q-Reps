@@ -30,14 +30,14 @@ poetry run python algos/qreps/qreps_main.py \
 ### QREPS
 Fast convergence in LunarLander and CartPole (for now).
 ##### CartPole-v1
-![Reference Image](dev/assets/img/cartpole.png)
+![Reference Image](assets/img/cartpole.png)
 
 
 https://github.com/niicovila/Q-Reps/assets/76247144/4faa3bb3-72bb-4efd-b046-dd61b7bc2589
 
 
 ##### LunarLander-v2
-![Reference Image](dev/assets/img/lunar_lander.png)
+![Reference Image](assets/img/lunar_lander.png)
 
 
 
@@ -46,11 +46,11 @@ https://github.com/niicovila/Q-Reps/assets/76247144/9d9dafac-3cb7-447f-8b2c-9820
 
 
 ### XPPO
-![Reference Image](dev/assets/img/xppo.png)
+![Reference Image](assets/img/xppo.png)
 
 ### XSAC
-![Reference Image](dev/assets/img/exact_xsac.png)
+![Reference Image](assets/img/exact_xsac.png)
 
 ### XTD3
-![Reference Image](dev/assets/img/exact_xtd3.png)
+![Reference Image](assets/img/exact_xtd3.png)
 
