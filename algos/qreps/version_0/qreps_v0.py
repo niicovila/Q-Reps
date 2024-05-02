@@ -273,8 +273,6 @@ if __name__ == "__main__":
                     new_q_a_value = newqvalue.gather(1, b_actions.long()[mb_inds].unsqueeze(-1)).squeeze(-1)
 
                     loss = empirical_logistic_bellman(new_q_a_value, b_returns[mb_inds], eta, newvalue, args.gamma, args.exp_clip)
-                    if args.mse_loss: loss = F.mse_loss(new_q_a_value, b_returns[mb_inds])
-                    
                     critic_optimizer.zero_grad(retain_graph=True)
                     loss.backward(retain_graph=True)
                     critic_optimizer.step()

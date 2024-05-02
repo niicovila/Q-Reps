@@ -1,4 +1,3 @@
-
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/dqn/#dqnpy
 import argparse 
 from copy import deepcopy
@@ -20,12 +19,11 @@ import ray.tune as tune  # Import the missing package
 from ray.tune.search.optuna import OptunaSearch
 from ray.tune.search import ConcurrencyLimiter
 
-def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
-    torch.nn.init.orthogonal_(layer.weight, std)
-    torch.nn.init.constant_(layer.bias, bias_const)
-    return layer
-
-Q_HIST = []
+import logging
+FORMAT = "[%(asctime)s]: %(message)s"
+logging.basicConfig(level=logging.INFO, format=FORMAT)
+SEED_OFFSET = 1
+logging_callback=lambda r: train.report({'reward':r})
 
 config = {
     "exp_name": "QREPS",
@@ -40,15 +38,15 @@ config = {
     "env_id": "CartPole-v1",
 
     # Algorithm
-    "total_timesteps": 100000,
-    "num_envs": tune.choice([4, 8, 64, 128, 256]),
-    "gamma": tune.choice([0.9, 0.95, 0.97, 0.99, 0.999]),
+    "total_timesteps": 50000,
+    "num_envs": 16,
+    "gamma": 0.99,
 
-    "total_iterations": tune.choice([512, 1024, 2048, 4096]),
-    "num_minibatches": tune.choice([8, 16, 32, 64]),
-    "update_epochs": tune.choice([10, 25, 50, 100, 150]),
+    "total_iterations": 2048,
+    "num_minibatches": 32,
+    "update_epochs": 50,
 
-    "alpha": tune.choice([4, 8, 12, 32]),
+    "alpha": tune.choice([4, 8, 12, 32]),    
     "eta": None,
 
     # Learning rates
@@ -57,34 +55,42 @@ config = {
     "q_lr": tune.choice([3e-05, 0.0001, 0.00025, 0.0003, 0.001, 0.003]),
 
     # Architecture
-    "policy_activation": tune.choice(["Tanh", "ReLU", "Sigmoid"]),
-    "num_hidden_layers": tune.choice([2, 4]),
-    "hidden_size": tune.choice([64, 128, 512]),
+    "policy_activation": tune.choice(["Tanh", "ReLU", "Sigmoid", "ELU"]),
+    "num_hidden_layers": tune.choice([2, 4, 8]),
+    "hidden_size": tune.choice([32, 64, 128, 512]),
     "actor_last_layer_std": tune.choice([0.01, 0.1, 1.0]),
 
     "q_activation": tune.choice(["Tanh", "ReLU", "Sigmoid", "ELU"]),
-    "q_hidden_size": tune.choice([64, 128, 512]),
-    "q_num_hidden_layers": tune.choice([2, 4]),
+    "q_num_hidden_layers": tune.choice([2, 4, 8]),
+    "q_hidden_size": tune.choice([32, 64, 128, 512]),
     "q_last_layer_std": tune.choice([0.01, 0.1, 1.0]),
 
     "sampler_activation": tune.choice(["Tanh", "ReLU", "Sigmoid", "ELU"]),
-    "sampler_hidden_size": 512,
     "sampler_num_hidden_layers": tune.choice([2, 4, 8]),
+    "sampler_hidden_size": tune.choice([32, 64, 128, 512]),
     "sampler_last_layer_std": tune.choice([0.01, 0.1, 1.0]),
 
+    "layer_init": tune.choice(["default", 
+                               "orthogonal_gain", 
+                               "orthogonal", 
+                               "xavier_normal", 
+                               "xavier_uniform", 
+                               "kaiming_normal", 
+                               "kaiming_uniform", 
+                               "sparse"]),
+
     # Optimization
-    "q_optimizer": tune.choice(["Adam", "SGD", "RMSprop"]),
-    "actor_optimizer": tune.choice(["Adam", "SGD", "RMSprop"]),
-    "sampler_optimizer": tune.choice(["Adam", "SGD", "RMSprop"]),
-    "eps": tune.choice([1e-4, 1e-8]),
+    "q_optimizer": "Adam",  # "Adam", "SGD", "RMSprop
+    "actor_optimizer": "Adam",
+    "sampler_optimizer": "Adam",
+    "eps": 1e-8,
 
     # Options
-    "ort_init": tune.choice([True, False]),
     "average_critics": True,
-    "normalize_delta": tune.choice([True, False]),
-    "use_kl_loss": tune.choice([True, False]),
-    "anneal_lr": tune.choice([True, False]),
-    "parametrized_sampler" : tune.choice([True, False]),
+    "normalize_delta": False,
+    "use_kl_loss": False,
+    "anneal_lr": False,
+    "parametrized_sampler" : True,
     "saddle_point_optimization": True,
     "q_histogram": False,
 
@@ -95,12 +101,8 @@ config = {
     "minibatch_size": 0,
     "num_iterations": 0,
     "num_steps": 0,
+    "logging_callback": logging_callback,
 }
-
-import logging
-FORMAT = "[%(asctime)s]: %(message)s"
-logging.basicConfig(level=logging.INFO, format=FORMAT)
-SEED_OFFSET = 1
 
 def make_env(env_id, seed, idx, capture_video, run_name):
     def thunk():
@@ -113,6 +115,30 @@ def make_env(env_id, seed, idx, capture_video, run_name):
         env.action_space.seed(seed)
         return env
     return thunk
+
+def layer_init(layer, args, gain_ort=np.sqrt(2), bias_const=0.0, gain=1):
+
+    if args.layer_init == "orthogonal_gain":
+        torch.nn.init.orthogonal_(layer.weight, gain_ort)
+    elif args.layer_init == "orthogonal":
+        torch.nn.init.orthogonal_(layer.weight, gain)
+
+    elif args.layer_init == "xavier_normal":
+        torch.nn.init.xavier_normal_(layer.weight, gain)
+    elif args.layer_init == "xavier_uniform":
+        torch.nn.init.xavier_uniform_(layer.weight, gain)
+
+    elif args.layer_init == "kaiming_normal":
+        torch.nn.init.kaiming_normal_(layer.weight)
+    elif args.layer_init == "kaiming_uniform":
+        torch.nn.init.kaiming_uniform_(layer.weight)
+
+    elif args.layer_init == "sparse":
+        torch.nn.init.sparse_(layer.weight, sparsity=0.1)
+    else:
+        pass
+    torch.nn.init.constant_(layer.bias, bias_const)
+    return layer
 
 def nll_loss(alpha, observations, next_observations, rewards, actions, log_likes, q_net, policy):
     weights = torch.clamp(q_net.get_values(observations, actions, policy)[0] / alpha, -50, 50)
@@ -133,11 +159,11 @@ class QNetwork(nn.Module):
         self.env = env
         self.alpha = args.alpha
 
-        def init_layer(layer, std=np.sqrt(2)):
-            if args.ort_init:
-                return layer_init(layer, std=std)
-            else:
+        def init_layer(layer, gain_ort=np.sqrt(2), gain=1):
+            if args.layer_init == "default":
                 return layer
+            else:
+                return layer_init(layer, args, gain_ort=gain_ort, gain=gain)
 
         self.critic = nn.Sequential(
             init_layer(nn.Linear(np.array(env.single_observation_space.shape).prod(), args.q_hidden_size)),
@@ -146,7 +172,7 @@ class QNetwork(nn.Module):
                 init_layer(nn.Linear(args.q_hidden_size, args.q_hidden_size)),
                 getattr(nn, args.q_activation)()
             )],
-            init_layer(nn.Linear(args.q_hidden_size, env.single_action_space.n), std=args.q_last_layer_std),
+            init_layer(nn.Linear(args.q_hidden_size, env.single_action_space.n), gain_ort=args.q_last_layer_std, gain=args.q_last_layer_std),
         )
 
     def forward(self, x):
@@ -170,11 +196,12 @@ class QREPSPolicy(nn.Module):
     def __init__(self, env, args):
         super().__init__()
 
-        def init_layer(layer, std=np.sqrt(2)):
-            if args.ort_init:
-                return layer_init(layer, std=std)
-            else:
+        def init_layer(layer, gain_ort=np.sqrt(2), gain=1):
+            if args.layer_init == "default":
                 return layer
+            else:
+                return layer_init(layer, args, gain_ort=gain_ort, gain=gain)
+
             
         self.actor = nn.Sequential(
             init_layer(nn.Linear(np.array(env.single_observation_space.shape).prod(), args.hidden_size)),
@@ -183,7 +210,7 @@ class QREPSPolicy(nn.Module):
                 init_layer(nn.Linear(args.hidden_size, args.hidden_size)),
                 getattr(nn, args.policy_activation)()
             )],
-            init_layer(nn.Linear(args.hidden_size, env.single_action_space.n), std=args.actor_last_layer_std),
+            init_layer(nn.Linear(args.hidden_size, env.single_action_space.n), gain_ort=args.actor_last_layer_std, gain=args.actor_last_layer_std),
         )
 
     def forward(self, x):
@@ -202,21 +229,15 @@ class Sampler(nn.Module):
     def __init__(self, args, N):
         super().__init__()
         self.n = N
-
-        def init_layer(layer, std=np.sqrt(2)):
-            if args.ort_init:
-                return layer_init(layer, std=std)
-            else:
-                return layer
             
         self.z = nn.Sequential(
-            init_layer(nn.Linear(N, args.sampler_hidden_size)),
+            (nn.Linear(N, args.sampler_hidden_size)),
             getattr(nn, args.sampler_activation)(),
             *[layer for _ in range(args.sampler_num_hidden_layers) for layer in (
-                init_layer(nn.Linear(args.sampler_hidden_size, args.sampler_hidden_size)),
+                (nn.Linear(args.sampler_hidden_size, args.sampler_hidden_size)),
                 getattr(nn, args.sampler_activation)()
             )],
-            init_layer(nn.Linear(args.sampler_hidden_size, N), std=args.sampler_last_layer_std),
+            (nn.Linear(args.sampler_hidden_size, N)),
         )
 
     def forward(self, x):
@@ -285,7 +306,6 @@ class ExponentiatedGradientSampler:
 
 def main(config):
     import torch
-    import torch.nn as nn
     import torch.optim as optim
     
     args = argparse.Namespace(**config)
@@ -294,8 +314,7 @@ def main(config):
     args.minibatch_size = args.total_iterations // args.num_minibatches
     args.num_iterations = args.total_timesteps // args.total_iterations
     args.num_steps = args.total_iterations // args.num_envs
-
-    logging_callback=lambda r: train.report({'reward':r})
+    logging_callback = args.logging_callback
 
     if args.track:
         import wandb
@@ -327,10 +346,6 @@ def main(config):
     envs = gym.vector.SyncVectorEnv(
         [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name) for i in range(args.num_envs)]
     )
-    # assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
-
-    actor = QREPSPolicy(envs, args).to(device)
-    qf = QNetwork(envs, args).to(device)
 
     actor = QREPSPolicy(envs, args).to(device)
     qf = QNetwork(envs, args).to(device)
@@ -374,7 +389,9 @@ def main(config):
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
     reward_iteration = []
-    for iteration in range(1, args.num_iterations + 1):
+
+    try:
+     for iteration in range(1, args.num_iterations + 1):
 
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
@@ -497,7 +514,8 @@ def main(config):
         if args.target_network and iteration % args.target_network_frequency == 0:
             for param, target_param in zip(qf.parameters(), qf_target.parameters()):
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-
+    except:
+        logging_callback(-1.0)
 
     if len(reward_iteration) > 0:
         logging_callback(np.mean(reward_iteration))
@@ -508,23 +526,22 @@ def main(config):
 
 
 search_alg = HEBOSearch(metric="reward", mode="max")
-re_search_alg = Repeater(search_alg, repeat=3)
+re_search_alg = Repeater(search_alg, repeat=2)
 
 # search_alg = OptunaSearch(metric="reward", mode="max")
 # search_alg = ConcurrencyLimiter(search_alg, max_concurrent=4)
 # re_search_alg = Repeater(search_alg, repeat=3)
 
-ray_init_config = {
-    "CPU": 1,
-}
 
+start_time = time.time()
 analysis = tune.run(
     main,
-    num_samples=100,
+    num_samples=800,
     config=config,
     search_alg=re_search_alg,
-    # resources_per_trial=ray_init_config,
     local_dir="/Users/nicolasvila/workplace/uni/tfg_v2/tests/results_tune",
 )
+print("Time taken: ", time.time() - start_time)
+
 df = analysis.results_df
-df.to_csv("CartPole_Qreps_main_2.csv")
+df.to_csv("CartPole_Qreps_main.csv")
