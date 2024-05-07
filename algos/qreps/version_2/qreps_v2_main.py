@@ -21,7 +21,7 @@ Q_HIST = []
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    seed: int = 1
+    seed: int = 3
     """seed of the experiment"""
     run_multiple_seeds: bool = False
     """if toggled, this script will run with multiple seeds"""
@@ -41,55 +41,55 @@ class Args:
     # Dynamics settings
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 50000
+    total_timesteps: int = 100000
     """total timesteps of the experiments"""
-    num_envs: int = 32
+    num_envs: int = 64
     """the number of parallel game environments"""
-    total_iterations: int = 512
+    total_iterations: int = 1024
     """the number of steps to run in each environment per policy rollout"""
-    gamma: float = 0.95
+    gamma: float = 0.999
     """the discount factor gamma"""
-    update_epochs: int = 50
+    update_epochs: int = 25
     """the number of epochs for the policy and value networks"""
-    update_epochs_policy: int = 25
+    update_epochs_policy: int = 100
     """the number of epochs for the policy network"""
     num_minibatches: int = 4
     """the number of minibatches to train the policy and value networks"""
 
-    policy_lr: float = 0.001
+    policy_lr: float = 0.0001
     """the learning rate of the policy network optimizer"""
-    q_lr: float = 0.00025
+    q_lr: float = 0.0003
     """the learning rate of the Q network network optimizer"""
-    beta: float = 3e-5
+    beta: float = 0.00025
     """coefficient for the saddle point optimization"""
 
     # Regularization
-    alpha: float = 12.0
+    alpha: float = 32.0
     """Entropy regularization coefficient."""
-    eta = 8
+    eta = 64
     """coefficient for the kl reg"""
 
     # Policy Network params
-    policy_activation: str = "ReLU"
+    policy_activation: str = "Tanh"
     """the activation function of the policy network"""
-    hidden_size: int = 512
+    hidden_size: int = 64
     """the hidden size of the policy network"""
-    num_hidden_layers: int =  4
+    num_hidden_layers: int =  2
     """the number of hidden layers of the policy network"""
     actor_last_layer_std: float = 0.01
     """the standard deviation of the last layer of the Q network"""
 
     # Q Network params
-    q_activation: str = "ReLU"
+    q_activation: str = "Tanh"
     """the activation function of the Q network"""
-    q_hidden_size: int = 512
+    q_hidden_size: int = 128
     """the hidden size of the Q network"""
     q_num_hidden_layers: int = 4
     """the number of hidden layers of the Q network"""
-    q_last_layer_std: float = 0.01
+    q_last_layer_std: float = 1.0
     """the standard deviation of the last layer of the Q network"""
 
-    layer_init: str = "orthogonal_gain"
+    layer_init: str = "kaiming_normal"
 
     # Sampler params
     sampler_activation: str = "Sigmoid"
@@ -104,7 +104,7 @@ class Args:
     # Optimizer params
     q_optimizer: str = "Adam"
     """the optimizer of the Q network"""
-    actor_optimizer: str = "SGD"
+    actor_optimizer: str = "Adam"
     """the optimizer of the policy network"""
     sampler_optimizer: str = "Adam"
     """the optimizer of the sampler"""
@@ -116,15 +116,16 @@ class Args:
     """if toggled, the saddle point optimization will be used"""
     parametrized_sampler: bool = False
     """if toggled, the sampler will be parametrized"""
-    average_critics: bool = True
+    average_critics: bool = False
     """if toggled, the critics will be averaged"""
     normalize_delta: bool = False
     """if toggled, the delta will be normalized"""
-    anneal_lr: bool = True
+    anneal_lr: bool = False
     """if toggled, the learning rate will decrease linearly"""
-    use_kl_loss: bool = False
+    use_kl_loss: bool = True
     """if toggled, the kl loss will be used"""
     use_policy: bool = False
+    """if toggled, the policy will be used"""
     gae: bool = True
     """if toggled, the generalized advantage estimator will be used"""
     target_network: bool = False
@@ -667,8 +668,8 @@ def tune_saddle_decoupled():
     next_done = torch.zeros(args.num_envs).to(device)
     reward_iteration = []
 
-    #try:
-    for iteration in range(1, args.num_iterations + 1):
+    try:
+     for iteration in range(1, args.num_iterations + 1):
 
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
@@ -705,7 +706,7 @@ def tune_saddle_decoupled():
                 for info in infos["final_info"]:
                     if info and "episode" in info:
                         reward_iteration.append(info["episode"]["r"])
-  
+
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_next_obs = next_observations.reshape((-1,) + envs.single_observation_space.shape)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
@@ -713,12 +714,12 @@ def tune_saddle_decoupled():
         b_rewards = rewards.flatten()
         b_dones = dones.flatten()
         b_inds = np.arange(args.total_iterations)
+
         weights_after_each_epoch = []
 
         if len(reward_iteration) > 5: 
+            print(np.mean(reward_iteration))
             reward_iteration = []
-
-        # bootstrap value if not done
 
         np.random.shuffle(b_inds)
         
@@ -727,7 +728,7 @@ def tune_saddle_decoupled():
             mb_inds = b_inds[start:end]
 
             if args.parametrized_sampler:
-                sampler = Sampler(args, N=args.minibatch_size).to(device)
+                sampler = Sampler(args, N=b_obs[mb_inds].shape[0]).to(device)
 
                 if args.sampler_optimizer == "Adam" or args.sampler_optimizer == "RMSprop":
                     sampler_optimizer = getattr(optim, args.sampler_optimizer)(
@@ -740,16 +741,15 @@ def tune_saddle_decoupled():
             else:
                 sampler = ExponentiatedGradientSampler(args.minibatch_size, device, eta, args.beta)
 
-            for epoch in range(args.update_epochs):   
- 
-                if args.target_network:
-                    delta = b_rewards[mb_inds].squeeze() + args.gamma * qf_target.get_values(b_next_obs[mb_inds], policy=actor)[1].detach() * (1 - b_dones[mb_inds]) - qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[0]          
-                else: delta = b_rewards[mb_inds].squeeze() + args.gamma * qf.get_values(b_next_obs[mb_inds], policy=actor)[1] * (1 - b_dones[mb_inds]) - qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[0]
-                
+            for epoch in range(args.update_epochs):      
+
                 q, values = qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)
                 values_next = qf.get_values(b_next_obs[mb_inds], b_actions[mb_inds], actor)[1]
-
-                if args.gae:
+     
+                if args.target_network:
+                    delta = b_rewards[mb_inds].squeeze() + args.gamma * qf_target.get_values(b_next_obs[mb_inds], policy=actor)[1].detach() * (1 - b_dones[mb_inds].squeeze()) - qf.get_values(b_obs[mb_inds], b_actions[mb_inds], actor)[0]          
+                        
+                elif args.gae:
                     delta = torch.zeros_like(b_rewards[mb_inds]).to(device)
                     lastgaelam = 0
                     for t in reversed(range(args.minibatch_size)):
@@ -758,7 +758,9 @@ def tune_saddle_decoupled():
                         delta_t = b_rewards[mb_inds][t] + args.gamma * nextvalues * nextnonterminal - q[t]
                         delta[t] = lastgaelam = delta_t + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
                     returns = delta + q
-                
+
+                else: delta = b_rewards[mb_inds].squeeze() + args.gamma * values_next * (1 - b_dones[mb_inds].squeeze()) - q
+
                 if args.normalize_delta: delta = (delta - delta.mean()) / (delta.std() + 1e-9)
 
                 bellman = delta.detach()
@@ -802,13 +804,14 @@ def tune_saddle_decoupled():
                     actor_loss.backward()
                     actor_optimizer.step()
 
-
         if args.target_network and iteration % args.target_network_frequency == 0:
             for param, target_param in zip(qf.parameters(), qf_target.parameters()):
                 target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-    # except:
-    #     logging_callback(-2000)
+    except:
+        print(-2000)
 
+    if len(reward_iteration) > 0:
+        print(np.mean(reward_iteration))
 
     envs.close()
     writer.close()

@@ -1,23 +1,31 @@
 #!/bin/bash
 #SBATCH --job-name=qreps-tune
-#SBATCH -p high-cpu
+#SBATCH -p high
 
 ### This script works for any number of nodes, Ray will find and manage all resources
-#SBATCH --nodes=1
-#SBATCH --nodelist=node018
+#SBATCH --nodes=2
 
 ### Give all resources on each node to a single Ray task, ray can manage the resources internally
+#SBATCH --gres=gpu:1
+#SBATCH --gpus-per-task=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-task=0
-#SBATCH --mem-per-cpu=1G
-#SBATCH --cpus-per-task=12
-#SBATCH --output=qreps_tune_job.out
-#SBATCH --error=qreps_tune_job.err
+#SBATCH --mem=5g # Memory per node. 5 GB (In total, 10 GB)
+#SBATCH --cpus-per-task=6
+#SBATCH --output=qreps_tune_job_gpu.out
+#SBATCH --error=qreps_tune_job_gpu.err
 
+# Download the source repository
+[ ! -e "nccl-tests" ] && git clone https://github.com/NVIDIA/nccl-tests.git
+
+# Load module libraries
+module load foss/2020b
+module load NCCL/2.8.3-GCCcore-10.2.0-CUDA-11.4.3
 module load "Miniconda3/4.9.2"
+
 eval "$(conda shell.bash hook)"
 conda activate qreps
 poetry install
+poetry install -E atari
 set -x
 
 # Getting the node names
@@ -64,4 +72,4 @@ for ((i = 1; i <= worker_num; i++)); do
     sleep 5
 done
 
-poetry run python -u ray_tune/tune.py "$SLURM_CPUS_PER_TASK"
+poetry run python -u ray_tune/tune_v2.py "$SLURM_CPUS_PER_TASK"

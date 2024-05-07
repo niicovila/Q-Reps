@@ -488,7 +488,7 @@ def tune_saddle_decoupled(config):
     import torch
     import torch.optim as optim
     
-    args = tyro.cli(Args)
+
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     args.minibatch_size = args.total_iterations // args.num_minibatches
     args.num_iterations = args.total_timesteps // args.total_iterations
